@@ -1,7 +1,7 @@
 use std::{sync::Mutex, time::Duration};
 
 use serde::Serialize;
-use tauri::{ipc::Channel, AppHandle, State};
+use tauri::{ipc::Channel, AppHandle, Manager, State};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 const UPDATE_TIMEOUT_SECONDS: u64 = 20;
@@ -76,7 +76,7 @@ fn updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
         .map_err(|error| format!("Could not configure updater endpoint: {error}"))?
         .timeout(Duration::from_secs(UPDATE_TIMEOUT_SECONDS))
         .build()
-        .map_err(|error| format!("Could not initialize the updater: {error}"))
+        .map_err(|error| format!("Could not initialize updater: {error}"))
 }
 
 pub fn setup(app: &mut tauri::App) -> tauri::Result<()> {
