@@ -1,145 +1,172 @@
+<div align="center">
+
 # AtrisBridge
 
-AtrisBridge; yazılım ve mühendislik projelerini farklı bilgisayarlar arasında daha güvenli, takip edilebilir ve taşınabilir hale getirmek için geliştirilen local-first bir masaüstü uygulamasıdır.
+### Mühendislik projeleri için local-first senkronizasyon uygulaması.
 
-> **Durum:** erken alpha (`0.1.0-alpha.9`). Yerel envanter, kalıcı SQLite state, restricted Google Drive transport, guarded backup/restore, conflict-aware two-way sync, OS-backed credential persistence, opsiyonel client-side içerik şifreleme, continuous watch, remembered AtrisHub desktop session, system tray runtime, global sync activity, signed updater ve Windows/Linux release packaging uygulanmıştır.
+Aktif yazılım ve mühendislik projelerini ZIP arşivlerine, kör klasör eşitlemeye veya last-write-wins yaklaşımına güvenmeden bilgisayarlar arasında taşınabilir tutun.
 
-[English README](README.md)
+**Local-first · Conflict-aware · Recovery odaklı**
+
+[English](README.md) · [Mimari](docs/architecture.md) · [Güvenlik](docs/security.md) · [Katkı](CONTRIBUTING.md)
+
+</div>
+
+> **Erken alpha — `0.1.0-alpha.9`**  
+> AtrisBridge aktif olarak geliştiriliyor. Temel senkronizasyon motoru, Google Drive transport, continuous watch, desktop runtime, opsiyonel encryption, AtrisHub account entegrasyonu, updater ve Windows/Linux release altyapısı uygulanmış durumda; ancak ürün henüz stable olarak değerlendirilmemelidir.
+
+## AtrisBridge nedir?
+
+AtrisBridge, aktif proje klasörlerini farklı bilgisayarlar arasında senkronize ederken kararların açık, takip edilebilir ve mümkün olduğunca güvenli kalmasını amaçlayan bir masaüstü uygulamasıdır.
+
+Basit bir cloud kopyasından daha değerli olan çalışma alanları için tasarlanır: source code projeleri, otomasyon uygulamaları, mühendislik workspaceleri, yoğun konfigürasyon içeren repository'ler, test varlıkları ve yanlış sürümün üzerine yazılmasının ciddi sonuç doğurabileceği diğer proje klasörleri.
+
+AtrisBridge yalnızca "hangi dosya daha yeni?" sorusunu sormaz. Her managed path için üç farklı state'i karşılaştırır:
+
+1. mevcut local durum,
+2. mevcut remote durum,
+3. iki tarafın en son kabul ettiği synchronized baseline.
+
+Bu model normal bir transfer ile gerçek conflict'i ayırmayı, destructive işlemleri korumayı ve daha eski bir kopyanın daha yeni bir dosyanın üzerine sessizce yazılmasını engellemeyi mümkün kılar.
 
 ## Neden AtrisBridge?
 
-Aktif projeleri bilgisayarlar arasında taşımak çoğu zaman ZIP dosyaları, manuel cloud klasörleri, eski kopyalar ve hangi sürümün güncel olduğuna dair belirsizlik oluşturur. AtrisBridge local proje ile storage provider arasına korumacı bir koordinasyon katmanı koyar:
+Projeleri bilgisayarlar arasında taşımak çoğu zaman aynı kırılgan rutine dönüşür: ZIP oluştur, bir yere yükle, hangi kopyanın güncel olduğunu hatırla, klasörleri manuel birleştir ve önemli bir dosyanın üzerine yazılmadığını um.
 
-- local-first workspace metadata ve scanning,
-- restart sonrasında kaybolmayan SQLite file state,
-- local içerik için BLAKE3 fingerprint,
-- local / remote / synchronized-baseline evidence ayrımı,
-- last-write-wins yerine conflict-aware two-way planlama,
-- recoverable deletion propagation,
-- OS-native secure credential storage,
-- opsiyonel client-side içerik şifreleme,
-- filesystem event'lerini sync gerçeği değil yalnızca dirty signal olarak kullanan continuous reconciliation,
-- unattended watch için tray'de yaşamaya devam eden desktop runtime,
-- ilk provider olarak Google Drive kullanan provider-independent mimari.
+AtrisBridge bu süreci durable state, review edilebilir planlar ve recoverable execution üzerine kurulu kontrollü bir senkronizasyon katmanıyla değiştirir.
 
-## Şu anda çalışan özellikler
+### Ürün prensipleri
 
-Phase 0'dan Phase 9'a kadar:
+**Local-first** — Workspace state ve senkronizasyon kararları masaüstünde kalır. Temel local kullanım için AtrisHub hesabı zorunlu değildir.
 
-- Tauri 2 + React + TypeScript masaüstü uygulaması,
-- native workspace seçimi ve yönetimi,
-- Rust scanner + BLAKE3 fingerprint,
-- generated output, Git metadata, IDE cache, `.env*`, private key/certificate ve recovery artifact'ları için built-in exclusions,
-- `.atrisbridgeignore`,
-- application-data altında SQLite journal,
-- kalıcı local/remote evidence,
-- pinned rclone `v1.74.4`,
-- `drive.file` ile Google Drive OAuth,
-- OAuth credential'larını yalnızca OS credential vault üzerinden kalıcı saklama,
-- workspace → Drive folder binding,
-- guarded local → Drive backup,
-- staged ve recoverable Drive → local restore,
-- review-first conflict-aware two-way synchronization,
-- reviewed deletion için exact-ID Google Drive Trash,
-- remote deletion local'e uygulanmadan önce app-data recovery copy,
-- recovery copy'yi açık kullanıcı aksiyonuyla geri alma,
-- workspace bazında opsiyonel **client-side içerik şifreleme**,
-- encrypted workspace için `AB1-...` recovery key export/import,
-- workspace bazında native filesystem watcher + debounce/coalescing,
-- başka bilgisayardaki Drive değişiklikleri için bounded provider reconciliation,
-- yalnızca güvenli transfer planlarında opsiyonel automatic apply,
-- conflict, blocked path, scanner belirsizliği veya her deletion durumunda fail-closed manual review,
-- watch loop aktifken manual mutating IPC işlemlerinin backend tarafından engellenmesi,
-- remembered AtrisHub desktop account ve OS vault içinde rotating refresh credential,
-- Open / Hide / Quit aksiyonlarına sahip system tray,
-- pencere kapatıldığında configured watcher'ların çalışmaya devam edebilmesi için close-to-tray davranışı,
-- active cycle, queued operation, conflict ve workspace watcher durumunu gösteren global Activity Center,
-- opt-in desktop alert + in-app fallback,
-- preview/stable kanal desteğine sahip signed Tauri updater,
-- owner-controlled Windows x64 ve Linux x64 package/release workflow'ları,
-- reproducible npm/Cargo lockfile ve CI doğrulaması.
+**Conflict-aware** — İki tarafta aynı anda değişen dosyalar last-write-wins ile çözülmez; conflict olarak kullanıcıya gösterilir.
 
-Workspace'i AtrisBridge'den kaldırmak proje dosyalarını silmez. Encryption recovery key'i de workspace metadata ile birlikte OS credential vault'tan otomatik silinmez; sessiz key silme encrypted remote veriyi geri döndürülemez hale getirebileceği için fail-safe şekilde korunur.
+**Deletion konusunda korumacı** — Silme işlemleri normal transfer gibi ele alınmaz. Ek review ve recovery korumaları vardır. Continuous watch hiçbir deletion işlemini otomatik uygulamaz.
 
-## Sync güvenlik modeli
+**Takip edilebilir** — Observation, planning ve execution ayrı katmanlardır. Belirsiz veya destructive durumlar gizlenmek yerine görünür hale getirilir.
 
-AtrisBridge modification time'ı conflict otoritesi olarak kullanmaz ve arka planda last-write-wins çalıştırmaz.
+**Provider-independent mimari** — İlk remote provider Google Drive'dır; transport katmanı ileride başka provider'ların eklenebilmesi için ayrıştırılmıştır.
 
-Two-Way modunda:
+## Temel özellikler
 
-- local değişti / remote aynı → upload,
-- local aynı / remote değişti → download,
-- iki taraf da değişti → conflict,
-- local silindi / remote aynı → exact reviewed Drive object Trash'e taşınır,
-- remote silindi / local aynı → verified recovery copy sonrası reviewed local deletion,
-- delete/modify overlap → conflict,
-- shared baseline sonrasında iki taraf da yok → converged deletion acknowledgement.
+### Proje workspaceleri
 
-Execution öncesinde provider ve filesystem evidence yeniden okunur; SQLite completion exact plan evidence üzerinden conditional yapılır.
+- Birden fazla local workspace'i tek masaüstü uygulamasından yönetin.
+- Rust scanner ile dosyaları tarayın ve BLAKE3 ile content fingerprint üretin.
+- Synchronization evidence ve geçmişini SQLite üzerinde kalıcı tutun.
+- Projeye özel exclude kuralları için `.atrisbridgeignore` kullanın.
+- Generated output ve yaygın local-only artifact'ları normal senkronizasyon akışının dışında tutun.
 
-## Continuous watch ve desktop runtime
+### Conflict-aware synchronization
 
-Continuous watch mode tekrar tekrar manuel scan yapma ihtiyacını azaltır fakat planner/executor güvenlik sınırını bypass etmez.
+- Yalnızca local'de değişen dosyaları upload edin.
+- Yalnızca remote'da değişen dosyaları download edin.
+- Aynı anda iki tarafta değişen dosyaları conflict olarak algılayın.
+- Destructive aksiyonları execution öncesinde review edin.
+- Reviewed local deletion öncesinde recovery copy oluşturun.
+- Reviewed Google Drive deletion işlemlerini geniş path silme yerine Trash üzerinden uygulayın.
 
-- native filesystem event'leri yalnızca **dirty signal** kabul edilir,
-- local event burst'leri debounce/coalescing penceresinde toparlanır,
-- her cycle full scanner + fresh provider observation çalıştırır,
-- bounded Drive polling local dosyalar sessizken başka cihazlardan gelen remote değişiklikleri yakalar,
-- workspace başına aynı anda yalnızca bir automatic cycle çalışabilir,
-- `Auto-apply safe transfers` ayrı bir opt-in ayarıdır ve varsayılan olarak kapalıdır,
-- conflict, blocked path, eksik scanner evidence, encryption/provider belirsizliği ve her deletion işlemi fail-closed olur,
-- watch mode **hiçbir deletion action'ını otomatik uygulamaz**,
-- watch mode workspace'i sahiplenmişken manual mutating command'lar Rust IPC boundary tarafından reddedilir.
+### Continuous watch
 
-Desktop'ta ana pencereyi kapatmak AtrisBridge sürecini sonlandırmak yerine uygulamayı system tray'e gizler. Tray'deki explicit **Quit AtrisBridge** aksiyonu gerçek çıkış noktasıdır. Activity Center aynı durable journal/runtime state'i gözlemler; ikinci bir sync authority oluşturmaz ve review kapılarını bypass etmez.
+- Configured workspace'leri native filesystem event'leriyle gözlemleyin.
+- Hızlı değişiklik burst'lerini debounce/coalesce edin.
+- Her senkronizasyon kararından önce tekrar scan ve provider observation yapın.
+- Local dosyalar sessizken başka bilgisayardan gelen remote değişiklikleri de algılayın.
+- İstenirse yalnızca güvenli transfer-only planları otomatik uygulayın.
+- Conflict, uncertainty ve tüm deletion işlemlerini manuel review'a bırakın.
 
-Ayrıntılar: [docs/continuous-watch.md](docs/continuous-watch.md) ve [docs/desktop-runtime.md](docs/desktop-runtime.md).
+### Desktop deneyimi
 
-## Secure credential ve AtrisHub account
+- **Open**, **Hide** ve **Quit** aksiyonlarına sahip system tray.
+- Ana pencere kapandığında configured watcher'ların çalışmaya devam edebilmesi için close-to-tray davranışı.
+- Active cycle, queued work, conflict ve workspace durumunu gösteren global Activity Center.
+- In-app alert'ler ve opsiyonel desktop notification desteği.
+- Preview/stable kanal desteğine sahip signed updater.
 
-Provider credential'ları, encryption secret'ları ve remembered AtrisHub refresh credential'ları secret oldukları sürece React, SQLite, `.env`, synchronized workspace veya repository dosyalarına yazılmaz. Kalıcı secret'lar için OS-backed secure storage kullanılır.
+### Güvenlik ve gizlilik
 
-AtrisHub login opsiyoneldir; account olmadan local AtrisBridge akışları çalışmaya devam eder. Remembered session rotating refresh credential kullanırken kısa ömürlü access credential process memory içinde tutulur.
+- Kalıcı hassas veriler uygun olduğu durumlarda işletim sisteminin secure storage altyapısında tutulur.
+- AtrisHub girişi opsiyoneldir; local workflow account olmadan çalışmaya devam eder.
+- Workspace bazında opsiyonel client-side content encryption kullanılabilir.
+- Encrypted workspaceler export edilebilir recovery key desteğine sahiptir.
+- Built-in safety exclusions yaygın local-only veya hassas artifact'ların yanlışlıkla senkronize edilme riskini azaltır.
 
-Ayrıntılar: [docs/security.md](docs/security.md) ve [docs/atrishub-account.md](docs/atrishub-account.md).
+> Mevcut encrypted transport dosya **içeriğini** korur. Dosya adları ve klasör yapısı storage provider tarafından görülebilir.
 
-## Opsiyonel client-side encryption
+## Nasıl çalışır?
 
-Client-side encryption workspace bazında opt-in'dir ve yalnızca accepted synchronized baseline oluşmadan, managed remote root boşken etkinleştirilebilir. AtrisBridge plaintext veriyi yerinde otomatik olarak ciphertext'e migrate etmez.
+```mermaid
+flowchart LR
+    A[Local Workspace] --> B[Rust Scanner + BLAKE3]
+    D[Remote Provider] --> C[Remote Observation]
+    B --> E[Sync Planner]
+    C --> E
+    F[SQLite Baseline + Journal] --> E
+    E --> G{Plan}
+    G -->|Safe transfer| H[Executor]
+    G -->|Conflict / deletion / uncertainty| I[Manual Review]
+    I --> H
+    H --> A
+    H --> D
+    H --> F
+```
 
-Regular file içeriği Drive'a gitmeden önce local'de şifrelenir. İlk encrypted transport sürümünde filename encryption bilinçli olarak kapalıdır; bu nedenle **dosya içeriği şifrelidir fakat dosya adları ve klasör yapısı storage provider tarafından görülebilir**. Missing/corrupt encrypted namespace veya key-verification evidence güvenli olmayan provider state olarak değerlendirilir ve fail-closed olur.
+Basitleştirilmiş decision modeli:
 
-## Release ve updater
+| Local | Remote | AtrisBridge kararı |
+| --- | --- | --- |
+| Değişti | Aynı | Upload |
+| Aynı | Değişti | Download |
+| Değişti | Değişti | Conflict |
+| Silindi | Aynı | Reviewed remote Trash aksiyonu |
+| Aynı | Silindi | Recovery copy, ardından reviewed local deletion |
+| Silindi | Değişti | Conflict |
+| Değişti | Silindi | Conflict |
 
-Release foundation Windows x64 NSIS/MSI ve Linux x64 AppImage/DEB paketleri üretir. rclone binary olarak repoya commit edilmez; packaging öncesinde pinned sürüm indirilip SHA-256 ile doğrulanır. Tauri updater signed updater artifact'larını ve AtrisHub channel policy'yi kullanırken package byte'ları GitHub Releases üzerinde kalır.
+AtrisBridge execution öncesinde filesystem ve provider evidence'i yeniden okur; böylece onaylanmış bir plan stale observation üzerinden sessizce çalışmaz.
 
-Ayrıntılar: [docs/release-updater.md](docs/release-updater.md).
+## Google Drive
 
-## Yol haritası
+Google Drive şu anda desteklenen ilk provider'dır. AtrisBridge unrestricted cloud mirroring yerine restricted rclone transport ve açık workspace-to-folder binding kullanır.
 
-1. **Phase 0/1 — temel mimari ve local inventory** ✅
-2. **Phase 2 — SQLite sync journal ve kalıcı file state** ✅
-3. **Phase 3 — restricted rclone transport + Google Drive observation** ✅
-4. **Phase 4 — güvenli incremental backup** ✅
-5. **Phase 5 — güvenli pull ve restore** ✅
-6. **Phase 6 — conflict-aware two-way sync** ✅
-7. **Phase 7 — persistent secure credential storage + opsiyonel client-side content encryption** ✅
-8. **Phase 8 — continuous watch mode + korumacı scheduler** ✅
-9. **Phase 9 — tray lifecycle, activity/progress UX, alert'ler, AtrisHub desktop session ve signed Windows/Linux release foundation** ✅
-10. **Phase 10+ — ek storage provider'lar, daha geniş platform packaging ve sonraki ürün entegrasyonları**
+Paketlenen rclone runtime `v1.74.4` sürümüne pinlenmiştir ve opaque binary olarak repoya commit edilmek yerine preparation/release sırasında doğrulanır.
 
-Mimari ve subsystem ayrıntıları [`docs/`](docs/architecture.md) altında bulunur.
+Ayrıntılar: [docs/rclone-transport.md](docs/rclone-transport.md).
+
+## Platformlar
+
+Mevcut release packaging hedefleri:
+
+| Platform | Mimari | Paketler | Durum |
+| --- | --- | --- | --- |
+| Windows | x64 | NSIS, MSI | Uygulandı |
+| Linux | x64 | AppImage, DEB | Uygulandı |
+| macOS | — | — | Planlanıyor |
+
+Release oluşturma GitHub Actions üzerinden owner-controlled şekilde çalışır. Ayrıntılar: [docs/release-updater.md](docs/release-updater.md).
+
+## Teknoloji
+
+- **Desktop:** Tauri 2
+- **Frontend:** React 19 + TypeScript + Vite
+- **Native core:** Rust
+- **Local state:** SQLite
+- **Fingerprinting:** BLAKE3
+- **Remote transport:** restricted rclone integration
+- **İlk provider:** Google Drive
+
+Subsystem tasarımı için [docs/architecture.md](docs/architecture.md) belgesine bakabilirsiniz.
 
 ## Geliştirme
 
-Gereksinimler:
+### Gereksinimler
 
 - Node.js LTS
 - npm
 - Rust stable
 - işletim sisteminiz için Tauri 2 gereksinimleri
 
-Pinned rclone sidecar'ı hazırlayın:
+### Local çalıştırma
 
 ```bash
 npm install
@@ -147,7 +174,7 @@ npm run sidecar:prepare
 npm run tauri:dev
 ```
 
-Validation:
+### Doğrulama
 
 ```bash
 npm run build
@@ -159,7 +186,7 @@ cargo check --locked --manifest-path src-tauri/Cargo.toml
 
 ## `.atrisbridgeignore`
 
-Workspace kökünde gitignore-compatible `.atrisbridgeignore` kuralları eklenebilir. Built-in safety exclusions custom dosya bulunmasa da aktiftir.
+Projeye özel exclude kuralları gerektiğinde workspace root'a `.atrisbridgeignore` ekleyebilirsiniz. Kurallar gitignore-compatible'dır; built-in safety exclusions bundan bağımsız olarak aktif kalır.
 
 ```gitignore
 artifacts/
@@ -168,12 +195,46 @@ customer-dumps/
 *.bak
 ```
 
-## Güvenlik ve şirket politikası
+## Proje durumu
 
-AtrisBridge yanlışlıkla veri sızdırma ve destructive synchronization riskini azaltacak şekilde tasarlanır; ancak şirket veya müşteri kaynak kodunu üçüncü taraf bir servise yüklemek için size yetki vermez. Senkronize edilen projenin şirket politikasına, DLP kurallarına, sözleşmelere, data-residency/export-control ve yetkilendirme gereksinimlerine her zaman uyulmalıdır.
+İlk ürün foundation'ı Phase 9'a kadar tamamlandı:
 
-Güvenlik açıklarını public issue üzerinden paylaşmayın. [SECURITY.md](SECURITY.md) belgesini kullanın.
+- ✅ Local workspace inventory ve durable state
+- ✅ Google Drive observation ve restricted transport
+- ✅ Guarded backup ve staged restore
+- ✅ Conflict-aware two-way synchronization
+- ✅ Secure persistence ve opsiyonel content encryption
+- ✅ Continuous watch ve korumacı scheduler
+- ✅ Tray runtime, Activity Center, alert'ler ve AtrisHub desktop session
+- ✅ Signed updater ve Windows/Linux release foundation
+- ⏳ Ek storage provider'lar
+- ⏳ Daha geniş platform packaging
+- ⏳ Gelecekteki Atris ecosystem entegrasyonları
+
+AtrisBridge halen alpha yazılımdır. Compatibility, migration davranışları, provider kapsamı ve production hardening geliştirilmeye devam edecektir.
+
+## Dokümantasyon
+
+- [Mimari](docs/architecture.md)
+- [Synchronization engine](docs/sync-engine.md)
+- [Backup engine](docs/backup-engine.md)
+- [Restore engine](docs/restore-engine.md)
+- [Continuous watch](docs/continuous-watch.md)
+- [Desktop runtime](docs/desktop-runtime.md)
+- [Security model](docs/security.md)
+- [AtrisHub account integration](docs/atrishub-account.md)
+- [Release ve updater](docs/release-updater.md)
+
+## Güvenlik ve sorumlu kullanım
+
+AtrisBridge yanlışlıkla veri sızdırma ve destructive synchronization riskini azaltmaya yardımcı olabilir; ancak proprietary, regulated, customer-controlled veya company-controlled verileri üçüncü taraf altyapısına yüklemek için kullanıcıya yetki vermez. Senkronize edilen projeye uygulanan şirket politikası, sözleşme ve yetkilendirme gereksinimlerine her zaman uyulmalıdır.
+
+Security vulnerability'leri public issue üzerinden paylaşmayın. [SECURITY.md](SECURITY.md) belgesini kullanın.
+
+## Katkı
+
+Katkılar ve teknik tartışmalar açıktır. Pull request açmadan önce [CONTRIBUTING.md](CONTRIBUTING.md) belgesini okuyun.
 
 ## Lisans
 
-[Apache License 2.0](LICENSE) ile lisanslanmıştır.
+AtrisBridge [Apache License 2.0](LICENSE) ile open source olarak lisanslanmıştır.
