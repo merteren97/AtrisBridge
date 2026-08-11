@@ -422,8 +422,8 @@ mod tests {
     fn remote_only_files_are_journaled_without_local_delete_intent() {
         let mut connection = test_connection();
         seed_workspace(&connection);
-        let provider = upsert_google_drive_connection_with_connection(&connection, None)
-            .expect("provider");
+        let provider =
+            upsert_google_drive_connection_with_connection(&connection, None).expect("provider");
         bind_workspace_with_connection(
             &connection,
             "workspace-1",
@@ -469,8 +469,8 @@ mod tests {
                 [],
             )
             .expect("local entry");
-        let provider = upsert_google_drive_connection_with_connection(&connection, None)
-            .expect("provider");
+        let provider =
+            upsert_google_drive_connection_with_connection(&connection, None).expect("provider");
         bind_workspace_with_connection(
             &connection,
             "workspace-1",
