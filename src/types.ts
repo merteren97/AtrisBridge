@@ -75,3 +75,45 @@ export interface RemoteInventoryReport {
   fileCount: number;
   totalBytes: number;
 }
+
+export type BackupPlanStatus = "ready" | "running" | "completed" | "partial" | "failed" | "cancelled";
+export type BackupPlanItemAction = "create" | "update" | "blocked";
+export type BackupPlanItemStatus = "ready" | "running" | "completed" | "failed" | "blocked" | "cancelled";
+
+export interface BackupPlanItem {
+  id: string;
+  relativePath: string;
+  action: BackupPlanItemAction;
+  status: BackupPlanItemStatus;
+  size: number | null;
+  blockReason: string | null;
+  lastError: string | null;
+}
+
+export interface BackupPlan {
+  id: string;
+  workspaceId: string;
+  providerId: string;
+  remotePath: string;
+  status: BackupPlanStatus;
+  createdAt: string;
+  localScanAt: string;
+  remoteInventoryAt: string;
+  uploadCount: number;
+  uploadBytes: number;
+  blockedCount: number;
+  completedCount: number;
+  failedCount: number;
+  completedAt: string | null;
+  previewTruncated: boolean;
+  items: BackupPlanItem[];
+}
+
+export interface BackupExecutionReport {
+  planId: string;
+  status: BackupPlanStatus;
+  completedCount: number;
+  failedCount: number;
+  uploadedBytes: number;
+  finishedAt: string;
+}

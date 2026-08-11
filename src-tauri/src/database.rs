@@ -7,7 +7,7 @@ use crate::models::Workspace;
 
 const DATABASE_FILE: &str = "atrisbridge.db";
 const LEGACY_WORKSPACE_FILE: &str = "workspaces.json";
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 3;
 const LEGACY_IMPORT_KEY: &str = "legacy_workspaces_imported";
 
 pub fn open_database(app: &AppHandle) -> Result<Connection, String> {
@@ -54,7 +54,7 @@ pub(crate) fn migrate_schema(connection: &mut Connection) -> rusqlite::Result<()
     if version == 0 {
         let transaction = connection.transaction()?;
         initialize_schema(&transaction)?;
-        transaction.execute_batch("PRAGMA user_version = 2;")?;
+        transaction.execute_batch("PRAGMA user_version = 3;")?;
         transaction.commit()?;
         return Ok(());
     }
@@ -62,7 +62,16 @@ pub(crate) fn migrate_schema(connection: &mut Connection) -> rusqlite::Result<()
     if version == 1 {
         let transaction = connection.transaction()?;
         migrate_to_v2(&transaction)?;
-        transaction.execute_batch("PRAGMA user_version = 2;")?;
+        migrate_to_v3(&transaction)?;
+        transaction.execute_batch("PRAGMA user_version = 3;")?;
+        transaction.commit()?;
+        return Ok(());
+    }
+
+    if version == 2 {
+        let transaction = connection.transaction()?;
+        migrate_to_v3(&transaction)?;
+        transaction.execute_batch("PRAGMA user_version = 3;")?;
         transaction.commit()?;
     }
 
@@ -210,7 +219,66 @@ fn initialize_schema(connection: &Connection) -> rusqlite::Result<()> {
         );
 
         CREATE INDEX IF NOT EXISTS idx_remote_scan_runs_workspace_scanned_at
-            ON remote_scan_runs(workspace_id, scanned_at DESC);",
+            ON remote_scan_runs(workspace_id, scanned_at DESC);
+
+        CREATE TABLE IF NOT EXISTS backup_plans (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            provider_id TEXT NOT NULL,
+            remote_path TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN (
+                'ready', 'running', 'completed', 'partial', 'failed', 'cancelled'
+            )),
+            created_at TEXT NOT NULL,
+            local_scan_at TEXT NOT NULL,
+            remote_inventory_at TEXT NOT NULL,
+            upload_count INTEGER NOT NULL DEFAULT 0,
+            upload_bytes INTEGER NOT NULL DEFAULT 0,
+            blocked_count INTEGER NOT NULL DEFAULT 0,
+            completed_count INTEGER NOT NULL DEFAULT 0,
+            failed_count INTEGER NOT NULL DEFAULT 0,
+            completed_at TEXT,
+            last_error TEXT,
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+            FOREIGN KEY(provider_id) REFERENCES provider_connections(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_backup_plans_workspace_created_at
+            ON backup_plans(workspace_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_backup_plans_workspace_status
+            ON backup_plans(workspace_id, status);
+
+        CREATE TABLE IF NOT EXISTS backup_plan_items (
+            id TEXT PRIMARY KEY,
+            plan_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            action TEXT NOT NULL CHECK(action IN ('create', 'update', 'blocked')),
+            status TEXT NOT NULL CHECK(status IN (
+                'ready', 'running', 'completed', 'failed', 'blocked', 'cancelled'
+            )),
+            local_hash TEXT,
+            local_size INTEGER,
+            expected_remote_present INTEGER NOT NULL DEFAULT 0 CHECK(expected_remote_present IN (0, 1)),
+            expected_remote_id TEXT,
+            expected_remote_checksum_type TEXT,
+            expected_remote_checksum TEXT,
+            completed_remote_id TEXT,
+            completed_remote_checksum_type TEXT,
+            completed_remote_checksum TEXT,
+            block_reason TEXT,
+            last_error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(plan_id, relative_path),
+            FOREIGN KEY(plan_id) REFERENCES backup_plans(id) ON DELETE CASCADE,
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_backup_plan_items_plan_status
+            ON backup_plan_items(plan_id, status);
+        CREATE INDEX IF NOT EXISTS idx_backup_plan_items_workspace_status
+            ON backup_plan_items(workspace_id, status);",
     )
 }
 
@@ -270,6 +338,69 @@ fn migrate_to_v2(connection: &Connection) -> rusqlite::Result<()> {
 
         CREATE INDEX IF NOT EXISTS idx_remote_scan_runs_workspace_scanned_at
             ON remote_scan_runs(workspace_id, scanned_at DESC);",
+    )
+}
+
+fn migrate_to_v3(connection: &Connection) -> rusqlite::Result<()> {
+    connection.execute_batch(
+        "CREATE TABLE IF NOT EXISTS backup_plans (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            provider_id TEXT NOT NULL,
+            remote_path TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN (
+                'ready', 'running', 'completed', 'partial', 'failed', 'cancelled'
+            )),
+            created_at TEXT NOT NULL,
+            local_scan_at TEXT NOT NULL,
+            remote_inventory_at TEXT NOT NULL,
+            upload_count INTEGER NOT NULL DEFAULT 0,
+            upload_bytes INTEGER NOT NULL DEFAULT 0,
+            blocked_count INTEGER NOT NULL DEFAULT 0,
+            completed_count INTEGER NOT NULL DEFAULT 0,
+            failed_count INTEGER NOT NULL DEFAULT 0,
+            completed_at TEXT,
+            last_error TEXT,
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+            FOREIGN KEY(provider_id) REFERENCES provider_connections(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_backup_plans_workspace_created_at
+            ON backup_plans(workspace_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_backup_plans_workspace_status
+            ON backup_plans(workspace_id, status);
+
+        CREATE TABLE IF NOT EXISTS backup_plan_items (
+            id TEXT PRIMARY KEY,
+            plan_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            action TEXT NOT NULL CHECK(action IN ('create', 'update', 'blocked')),
+            status TEXT NOT NULL CHECK(status IN (
+                'ready', 'running', 'completed', 'failed', 'blocked', 'cancelled'
+            )),
+            local_hash TEXT,
+            local_size INTEGER,
+            expected_remote_present INTEGER NOT NULL DEFAULT 0 CHECK(expected_remote_present IN (0, 1)),
+            expected_remote_id TEXT,
+            expected_remote_checksum_type TEXT,
+            expected_remote_checksum TEXT,
+            completed_remote_id TEXT,
+            completed_remote_checksum_type TEXT,
+            completed_remote_checksum TEXT,
+            block_reason TEXT,
+            last_error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(plan_id, relative_path),
+            FOREIGN KEY(plan_id) REFERENCES backup_plans(id) ON DELETE CASCADE,
+            FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_backup_plan_items_plan_status
+            ON backup_plan_items(plan_id, status);
+        CREATE INDEX IF NOT EXISTS idx_backup_plan_items_workspace_status
+            ON backup_plan_items(workspace_id, status);",
     )
 }
 
@@ -340,7 +471,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn migrates_phase_two_database_to_provider_schema() {
+    fn migrates_phase_two_database_to_backup_plan_schema() {
         let mut connection = Connection::open_in_memory().expect("database");
         connection
             .execute_batch(
@@ -355,7 +486,7 @@ mod tests {
             )
             .expect("phase two schema");
 
-        migrate_schema(&mut connection).expect("phase three migration");
+        migrate_schema(&mut connection).expect("phase four migration");
 
         let version: i32 = connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
@@ -374,9 +505,78 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("provider table");
+        let plan_table: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'backup_plans'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("plan table");
+        let plan_item_table: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'backup_plan_items'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("plan item table");
 
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
         assert_eq!(remote_present, 1);
         assert_eq!(provider_table, 1);
+        assert_eq!(plan_table, 1);
+        assert_eq!(plan_item_table, 1);
+    }
+
+    #[test]
+    fn migrates_phase_three_database_to_backup_plan_schema() {
+        let mut connection = Connection::open_in_memory().expect("database");
+        initialize_schema_without_phase_four(&connection).expect("phase three schema");
+        connection
+            .execute_batch("PRAGMA user_version = 2;")
+            .expect("version");
+
+        migrate_schema(&mut connection).expect("phase four migration");
+
+        let version: i32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("version");
+        let plan_table: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'backup_plans'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("plan table");
+
+        assert_eq!(version, 3);
+        assert_eq!(plan_table, 1);
+    }
+
+    fn initialize_schema_without_phase_four(connection: &Connection) -> rusqlite::Result<()> {
+        connection.execute_batch(
+            "CREATE TABLE workspaces (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                local_path TEXT NOT NULL UNIQUE,
+                sync_mode TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_scan_at TEXT
+            );
+            CREATE TABLE provider_connections (
+                id TEXT PRIMARY KEY,
+                provider_type TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                account_label TEXT,
+                created_at TEXT NOT NULL,
+                last_verified_at TEXT
+            );
+            CREATE TABLE workspace_remote_bindings (
+                workspace_id TEXT PRIMARY KEY,
+                provider_id TEXT NOT NULL,
+                remote_path TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_inventory_at TEXT
+            );",
+        )
     }
 }

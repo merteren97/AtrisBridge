@@ -1,13 +1,18 @@
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Component, Path, PathBuf},
+};
 
 use chrono::Utc;
 use tauri::{AppHandle, State};
 use uuid::Uuid;
 
 use crate::{
+    backup,
     models::{
-        JournalSummary, ProviderConnection, RcloneStatus, RemoteInventoryReport, ScanReport,
-        SyncMode, Workspace, WorkspaceRemoteBinding,
+        BackupExecutionReport, BackupPlan, JournalSummary, ProviderConnection, RcloneStatus,
+        RemoteFileObservation, RemoteInventoryReport, ScanReport, SyncMode, Workspace,
+        WorkspaceRemoteBinding,
     },
     provider_sessions::ProviderSessionStore,
     provider_storage, scanner,
@@ -197,14 +202,97 @@ pub async fn scan_remote_inventory(
     id: String,
     sessions: State<'_, ProviderSessionStore>,
 ) -> Result<RemoteInventoryReport, String> {
-    find_workspace(&app, &id)?;
-    let (provider, binding) = provider_storage::get_provider_for_workspace(&app, &id)?;
-    if provider.provider_type != "google_drive" {
-        return Err("This provider is not supported by the current transport adapter.".into());
-    }
+    let (provider, _) = provider_storage::get_provider_for_workspace(&app, &id)?;
     let token = sessions.google_drive_token(&provider.id)?.ok_or_else(|| {
         "Google Drive session is not active. Reconnect before scanning remote files.".to_string()
     })?;
+    refresh_remote_inventory(&app, &id, token).await
+}
+
+#[tauri::command]
+pub fn latest_backup_plan(app: AppHandle, id: String) -> Result<Option<BackupPlan>, String> {
+    backup::latest_plan(&app, &id)
+}
+
+#[tauri::command]
+pub async fn prepare_backup_plan(
+    app: AppHandle,
+    id: String,
+    sessions: State<'_, ProviderSessionStore>,
+) -> Result<BackupPlan, String> {
+    let workspace = find_workspace(&app, &id)?;
+    if !matches!(workspace.sync_mode, SyncMode::Backup) {
+        return Err("Phase 4 only prepares upload plans for backup-mode workspaces.".into());
+    }
+    let (provider, binding) = provider_storage::get_provider_for_workspace(&app, &id)?;
+    if provider.provider_type != "google_drive" {
+        return Err("Phase 4 currently supports Google Drive backup only.".into());
+    }
+    ensure_managed_backup_root(&binding.remote_path)?;
+    let token = sessions.google_drive_token(&provider.id)?.ok_or_else(|| {
+        "Google Drive session is not active. Reconnect before preparing a backup.".to_string()
+    })?;
+
+    refresh_local_inventory(&app, &id).await?;
+    refresh_remote_inventory(&app, &id, token).await?;
+    backup::create_plan(&app, &id)
+}
+
+#[tauri::command]
+pub async fn execute_backup_plan(
+    app: AppHandle,
+    plan_id: String,
+    sessions: State<'_, ProviderSessionStore>,
+) -> Result<BackupExecutionReport, String> {
+    let context = backup::execution_context(&app, &plan_id)?;
+    ensure_managed_backup_root(&context.remote_path)?;
+    let token = sessions
+        .google_drive_token(&context.provider_id)?
+        .ok_or_else(|| {
+            "Google Drive session is not active. Reconnect before backup.".to_string()
+        })?;
+
+    refresh_local_inventory(&app, &context.workspace_id).await?;
+    refresh_remote_inventory(&app, &context.workspace_id, token.clone()).await?;
+
+    let context = backup::execution_context(&app, &plan_id)?;
+    ensure_managed_backup_root(&context.remote_path)?;
+    let operations = backup::begin_execution(&app, &plan_id)?;
+    for operation in operations {
+        if let Err(error) = backup::mark_operation_running(&app, &operation.id) {
+            let _ = backup::fail_operation(&app, &operation.id, &error);
+            continue;
+        }
+
+        if let Err(error) = execute_backup_operation(&app, &context, &operation, &token).await {
+            let _ = backup::fail_operation(&app, &operation.id, &error);
+        }
+    }
+
+    backup::finalize_plan(&app, &plan_id)
+}
+
+async fn refresh_local_inventory(app: &AppHandle, id: &str) -> Result<ScanReport, String> {
+    let workspace = find_workspace(app, id)?;
+    let root = PathBuf::from(workspace.local_path);
+    let workspace_id = id.to_string();
+    let outcome = tauri::async_runtime::spawn_blocking(move || scanner::scan(&workspace_id, &root))
+        .await
+        .map_err(|error| format!("Local scan worker failed: {error}"))??;
+    record_scan(app, &outcome.report, &outcome.inventory)?;
+    Ok(outcome.report)
+}
+
+async fn refresh_remote_inventory(
+    app: &AppHandle,
+    id: &str,
+    token: String,
+) -> Result<RemoteInventoryReport, String> {
+    find_workspace(app, id)?;
+    let (provider, binding) = provider_storage::get_provider_for_workspace(app, id)?;
+    if provider.provider_type != "google_drive" {
+        return Err("This provider is not supported by the current transport adapter.".into());
+    }
 
     let inventory_app = app.clone();
     let inventory_path = binding.remote_path.clone();
@@ -219,13 +307,175 @@ pub async fn scan_remote_inventory(
             .ok_or_else(|| "Remote inventory size exceeded supported range.".to_string())
     })?;
     let report = RemoteInventoryReport {
-        workspace_id: id,
+        workspace_id: id.to_string(),
         provider_id: provider.id,
         remote_path: binding.remote_path,
         scanned_at: Utc::now().to_rfc3339(),
         file_count: observations.len() as u64,
         total_bytes,
     };
-    provider_storage::record_remote_inventory(&app, &report, &observations)?;
+    provider_storage::record_remote_inventory(app, &report, &observations)?;
     Ok(report)
+}
+
+async fn execute_backup_operation(
+    app: &AppHandle,
+    context: &backup::BackupExecutionContext,
+    operation: &backup::BackupOperation,
+    token: &str,
+) -> Result<(), String> {
+    let current =
+        backup::current_file_evidence(app, &operation.workspace_id, &operation.relative_path)?;
+    if !current.local_present
+        || current.local_hash.as_deref() != Some(operation.local_hash.as_str())
+        || current.local_size != Some(operation.local_size)
+    {
+        return Err(
+            "Local file changed after the backup plan was prepared. Prepare a fresh plan.".into(),
+        );
+    }
+
+    match operation.action.as_str() {
+        "create" => {
+            if operation.expected_remote_present || current.remote_present {
+                return Err(
+                    "Remote path appeared after planning. AtrisBridge will not overwrite it."
+                        .into(),
+                );
+            }
+        }
+        "update" => {
+            if !operation.expected_remote_present || !current.remote_present {
+                return Err(
+                    "Remote file disappeared after planning. AtrisBridge will not recreate it automatically."
+                        .into(),
+                );
+            }
+            ensure_current_remote_matches_plan(operation, &current)?;
+        }
+        _ => return Err("Unsupported Phase 4 backup action.".into()),
+    }
+
+    let workspace = find_workspace(app, &operation.workspace_id)?;
+    let local_path = resolve_upload_path(&workspace, &operation.relative_path)?;
+    let (actual_size, actual_hash) = scanner::fingerprint_file(&local_path)?;
+    if actual_size != operation.local_size || actual_hash != operation.local_hash {
+        return Err(
+            "Local file changed during upload preflight. Nothing was sent; prepare a fresh plan."
+                .into(),
+        );
+    }
+
+    let remote_file_path =
+        rclone::join_remote_path(&context.remote_path, &operation.relative_path)?;
+    if operation.action == "update" {
+        let stat_app = app.clone();
+        let stat_token = token.to_string();
+        let stat_path = remote_file_path.clone();
+        let stat_relative = operation.relative_path.clone();
+        let observation = tauri::async_runtime::spawn_blocking(move || {
+            rclone::stat_google_drive_file(&stat_app, &stat_token, &stat_path, &stat_relative)
+        })
+        .await
+        .map_err(|error| format!("Remote preflight worker failed: {error}"))??;
+        ensure_remote_observation_matches_plan(operation, &observation)?;
+    }
+
+    let upload_app = app.clone();
+    let upload_token = token.to_string();
+    let upload_local = local_path;
+    let upload_remote = remote_file_path;
+    let create_only = operation.action == "create";
+    let observation = tauri::async_runtime::spawn_blocking(move || {
+        rclone::upload_google_drive_file(
+            &upload_app,
+            &upload_token,
+            &upload_local,
+            &upload_remote,
+            create_only,
+        )
+    })
+    .await
+    .map_err(|error| format!("Upload worker failed: {error}"))??;
+
+    if observation.size != operation.local_size
+        || observation.remote_id.is_none()
+        || observation.checksum_type.is_none()
+        || observation.checksum.is_none()
+    {
+        return Err(
+            "Google Drive upload completed without enough evidence to establish a safe baseline."
+                .into(),
+        );
+    }
+
+    backup::complete_operation(app, operation, &observation)
+}
+
+fn ensure_current_remote_matches_plan(
+    operation: &backup::BackupOperation,
+    current: &backup::CurrentFileEvidence,
+) -> Result<(), String> {
+    if current.remote_id != operation.expected_remote_id
+        || current.remote_checksum_type != operation.expected_remote_checksum_type
+        || current.remote_checksum != operation.expected_remote_checksum
+    {
+        return Err(
+            "Remote evidence changed after planning. AtrisBridge blocked the overwrite.".into(),
+        );
+    }
+    Ok(())
+}
+
+fn ensure_remote_observation_matches_plan(
+    operation: &backup::BackupOperation,
+    observation: &RemoteFileObservation,
+) -> Result<(), String> {
+    if observation.remote_id != operation.expected_remote_id
+        || observation.checksum_type != operation.expected_remote_checksum_type
+        || observation.checksum != operation.expected_remote_checksum
+    {
+        return Err(
+            "Remote file changed during upload preflight. AtrisBridge blocked the overwrite."
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+fn ensure_managed_backup_root(remote_path: &str) -> Result<(), String> {
+    let normalized = rclone::normalize_remote_path(remote_path)?;
+    if normalized == "AtrisBridge" || normalized.starts_with("AtrisBridge/") {
+        return Ok(());
+    }
+    Err(
+        "Phase 4 writes are restricted to an AtrisBridge-managed Google Drive path. Rebind this workspace under AtrisBridge/... before preparing a backup."
+            .into(),
+    )
+}
+
+fn resolve_upload_path(workspace: &Workspace, relative_path: &str) -> Result<PathBuf, String> {
+    let relative = Path::new(relative_path);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err("Backup item contains an unsafe local path.".into());
+    }
+
+    let root = PathBuf::from(&workspace.local_path)
+        .canonicalize()
+        .map_err(|error| format!("Could not resolve workspace root: {error}"))?;
+    let candidate = root.join(relative);
+    let canonical = candidate
+        .canonicalize()
+        .map_err(|error| format!("Could not resolve upload candidate: {error}"))?;
+    if !canonical.starts_with(&root) {
+        return Err("Backup item escaped the selected workspace root.".into());
+    }
+    if !canonical.is_file() {
+        return Err("Backup item is no longer a regular file.".into());
+    }
+    Ok(canonical)
 }

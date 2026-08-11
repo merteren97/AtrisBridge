@@ -1,7 +1,7 @@
 use std::{
     fs::{self, File},
     io::Read,
-    path::Path,
+    path::{Component, Path},
     time::Instant,
 };
 
@@ -81,6 +81,17 @@ pub fn scan(workspace_id: &str, root: &Path) -> Result<ScanOutcome, String> {
         },
         inventory: state.files,
     })
+}
+
+pub fn fingerprint_file(path: &Path) -> Result<(u64, String), String> {
+    let metadata = fs::metadata(path)
+        .map_err(|error| format!("Could not read upload candidate metadata: {error}"))?;
+    if !metadata.is_file() {
+        return Err("Upload candidate is no longer a regular file.".into());
+    }
+    let digest = hash_file(path)
+        .map_err(|error| format!("Could not fingerprint upload candidate: {error}"))?;
+    Ok((metadata.len(), digest))
 }
 
 fn build_custom_ignore(root: &Path) -> Result<Option<Gitignore>, String> {
@@ -254,7 +265,13 @@ fn is_builtin_ignored(relative: &Path, is_dir: bool) -> bool {
 }
 
 fn normalized_relative_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+    path.components()
+        .filter_map(|component| match component {
+            Component::Normal(value) => Some(value.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn push_warning(state: &mut ScanState, warning: String) {
@@ -299,8 +316,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalizes_windows_style_paths() {
-        let path = PathBuf::from(r"src\feature\file.rs");
+    fn normalizes_path_components_for_journal_keys() {
+        let path = PathBuf::from("src").join("feature").join("file.rs");
         assert_eq!(normalized_relative_path(&path), "src/feature/file.rs");
     }
 

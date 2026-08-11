@@ -1,65 +1,69 @@
 # rclone transport boundary
 
-Phase 3 introduces rclone as a transport implementation without making rclone the synchronization authority.
-
-## Trust boundary
-
-AtrisBridge owns:
-
-- workspace selection and policy,
-- local BLAKE3 inventory,
-- durable sync state,
-- remote observations,
-- conflict/tombstone decisions,
-- future operation planning and approval.
-
-rclone is limited to provider transport and provider metadata queries. Phase 3 does not expose copy, sync, move, delete, purge, cleanup, bisync, mount, serve, or remote-control commands.
+AtrisBridge uses rclone as a narrow provider transport adapter. rclone is **not** the synchronization authority: AtrisBridge owns workspace policy, BLAKE3 inventory, durable state, planning, conflict decisions, and baseline acceptance.
 
 ## Runtime resolution
 
 AtrisBridge never searches the system `PATH` for rclone.
 
 - Development: `src-tauri/binaries/rclone(.exe)` prepared by `npm run sidecar:prepare`.
-- Packaged application: a future release step places the verified executable under the application resource directory at `rclone/rclone(.exe)`.
+- Packaged application: the verified executable is expected under the application resource directory at `rclone/rclone(.exe)`.
 
-The runtime accepts only the pinned rclone `v1.74.4` runtime. The preparation script pins the official `v1.74.4` archives and verifies SHA-256 before copying the executable.
+The runtime accepts exactly rclone `v1.74.4`. The preparation script downloads the pinned official archive and verifies the platform-specific SHA-256 digest before copying the executable.
 
 ## Google Drive authorization
 
-Phase 3 uses rclone's browser authorization flow with the `drive.file` scope. The OAuth JSON token is parsed from the successful authorization response and retained only in `ProviderSessionStore`, an in-memory Rust structure managed by Tauri.
+Google Drive uses the browser authorization flow with the `drive.file` scope. The OAuth JSON token is retained only in the Tauri-managed in-memory `ProviderSessionStore`.
 
-The token is **not** written to:
-
-- SQLite,
-- `rclone.conf`,
-- environment files,
-- logs,
-- PR-visible configuration.
-
-Provider metadata stored in SQLite contains only provider ID/type, display/account label, timestamps, workspace mapping, and remote inventory observations. Restarting the application intentionally drops the OAuth session and requires reconnecting.
+The token is not written to SQLite, `rclone.conf`, `.env` files, repository files, or provider metadata. Restarting AtrisBridge intentionally drops the session and requires reconnecting until a dedicated secure credential layer is introduced.
 
 ## Invocation model
 
-rclone is launched directly with `std::process::Command`; there is no shell interpolation. AtrisBridge removes inherited rclone credential/config environment variables before each invocation and supplies the session token only to the child environment as `RCLONE_DRIVE_TOKEN`.
+rclone is launched directly with `std::process::Command`; there is no shell interpolation. AtrisBridge removes inherited rclone credential/config environment variables before every invocation and supplies the session token only to the child process.
 
-The phase-3 allowlist is implemented as dedicated functions rather than a generic "run rclone arguments" command:
+There is no frontend command that accepts arbitrary rclone arguments. The Phase 4 adapter exposes only dedicated functions for:
 
 - `rclone version`
 - `rclone authorize drive`
-- `rclone config userinfo :drive:`
-- `rclone about :drive:`
-- `rclone lsjson :drive:`
+- `rclone config userinfo`
+- `rclone about`
+- `rclone lsjson` for inventory and targeted stat
+- local `rclone hashsum MD5` for upload evidence
+- single-file `rclone copyto` for an approved backup item
 
-No frontend command accepts arbitrary executable names or arbitrary rclone argument arrays.
+`sync`, `bisync`, `delete`, `purge`, `move`, `mount`, `serve`, remote control, and generic command execution remain unavailable.
 
 ## Remote inventory
 
-Remote files are listed from the provider root and filtered in Rust to the workspace's dedicated remote prefix. This means a not-yet-created workspace folder safely appears as an empty inventory instead of requiring Phase 3 to create remote directories.
+The adapter queries the workspace's bound Google Drive folder directly instead of listing all visible Drive content and filtering it locally. A provider "directory not found" result is treated as an empty workspace inventory so the first approved backup can create its managed path.
 
-Google Drive's provider checksum (normally MD5 for ordinary project files) is stored as `remote_checksum` with its checksum type. It is deliberately separate from AtrisBridge's BLAKE3 fields. Two different hash algorithms are never treated as equal content evidence.
+Google Drive checksums are recorded separately from local BLAKE3 fingerprints. They are different evidence types and are never directly compared as if they used the same algorithm.
 
-If the same relative path exists locally and remotely before AtrisBridge has a known synchronized baseline, the entry becomes a conflict. Phase 3 never guesses that the files are identical from timestamps or sizes.
+Duplicate relative paths returned by Google Drive are treated as unsafe. AtrisBridge blocks planning instead of automatically running a destructive deduplication command.
 
-## Why transfers stay disabled
+## Phase 4 write boundary
 
-A provider connection proving that AtrisBridge can observe Drive is not enough to authorize writes. Phase 4 will add an explicit operation planner that converts durable file state into upload operations, performs preflight checks, records operation state transactionally, and verifies the remote result before establishing a synchronized baseline.
+Remote writes are restricted to an `AtrisBridge/...` workspace root. A backup plan captures local BLAKE3/size and expected remote ID/checksum before any upload is allowed.
+
+For each approved file AtrisBridge:
+
+1. revalidates the plan against fresh local and remote inventories,
+2. performs a targeted remote stat before an update,
+3. computes local BLAKE3 and MD5 evidence,
+4. executes one `copyto` with retries limited to one,
+5. recomputes local BLAKE3 after the transfer,
+6. reads the resulting Drive object,
+7. requires remote size and MD5 to match the local evidence,
+8. only then commits the synchronized baseline in SQLite.
+
+New-file operations also perform a targeted existence check immediately before the write and use `--immutable` as an additional refusal-to-overwrite guard.
+
+A transport process can report an error after the provider has already accepted a file. In that case AtrisBridge does not blindly retry: if the exact remote size and MD5 match the local evidence, the verified remote observation can be accepted for that operation. This reduces duplicate-object risk on Google Drive.
+
+## Concurrency limitation
+
+The Phase 4 rclone adapter does not claim atomic compare-and-swap semantics for updates to an existing Drive object. There remains a small provider-side race window between the final targeted preflight and the write. AtrisBridge mitigates it with fresh inventories, remote ID/checksum comparison, a targeted stat, a single transfer attempt, and post-upload content verification. A future direct provider adapter can use provider-native conditional writes if an appropriate precondition is available.
+
+## No deletion semantics
+
+Phase 4 never maps a missing local file to a remote delete. Remote-only files, local tombstones, unverified overlaps, and conflicts are preserved as evidence and are not modified by the backup executor.
