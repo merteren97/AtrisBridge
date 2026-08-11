@@ -1,6 +1,8 @@
 mod backup;
 mod backup_recovery;
 mod commands;
+mod continuous;
+mod continuous_commands;
 mod database;
 mod encryption;
 mod models;
@@ -14,52 +16,59 @@ mod sync;
 mod sync_recovery;
 mod transport;
 
+use continuous::ContinuousSyncManager;
 use provider_sessions::ProviderSessionStore;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(ProviderSessionStore::default())
+        .manage(ContinuousSyncManager::default())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             backup_recovery::recover_interrupted_plans(app.handle())
                 .map_err(std::io::Error::other)?;
             restore::recover_interrupted_restores(app.handle()).map_err(std::io::Error::other)?;
             sync::recover_interrupted_syncs(app.handle()).map_err(std::io::Error::other)?;
+            continuous::initialize(app.handle()).map_err(std::io::Error::other)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_workspaces,
             commands::add_workspace,
-            commands::remove_workspace,
-            commands::scan_workspace,
-            commands::initialize_ignore_file,
+            continuous_commands::guarded_remove_workspace,
+            continuous_commands::guarded_scan_workspace,
+            continuous_commands::guarded_initialize_ignore_file,
             commands::journal_summary,
             commands::journal_summaries,
             commands::rclone_runtime_status,
             commands::provider_connections,
-            commands::connect_google_drive,
-            commands::disconnect_provider_session,
-            commands::forget_provider,
+            continuous_commands::guarded_connect_google_drive,
+            continuous_commands::guarded_disconnect_provider_session,
+            continuous_commands::guarded_forget_provider,
             commands::workspace_remote_binding,
-            commands::bind_workspace_remote,
-            commands::scan_remote_inventory,
+            continuous_commands::guarded_bind_workspace_remote,
+            continuous_commands::guarded_scan_remote_inventory,
             commands::latest_backup_plan,
-            commands::prepare_backup_plan,
-            commands::execute_backup_plan,
+            continuous_commands::guarded_prepare_backup_plan,
+            continuous_commands::guarded_execute_backup_plan,
             restore::latest_restore_plan,
-            restore::prepare_restore_plan,
-            restore::execute_restore_plan,
-            sync::set_workspace_sync_mode,
+            continuous_commands::guarded_prepare_restore_plan,
+            continuous_commands::guarded_execute_restore_plan,
+            continuous_commands::guarded_set_workspace_sync_mode,
             sync::latest_sync_plan,
-            sync::prepare_sync_plan,
-            sync::execute_sync_plan,
+            continuous_commands::guarded_prepare_sync_plan,
+            continuous_commands::guarded_execute_sync_plan,
             sync_recovery::list_sync_recoveries,
-            sync_recovery::restore_sync_recovery,
+            continuous_commands::guarded_restore_sync_recovery,
             encryption::workspace_encryption_status,
-            encryption::enable_workspace_encryption,
+            continuous_commands::guarded_enable_workspace_encryption,
             encryption::export_workspace_recovery_key,
-            encryption::import_workspace_recovery_key,
+            continuous_commands::guarded_import_workspace_recovery_key,
+            continuous::continuous_sync_status,
+            continuous::set_continuous_sync_enabled,
+            continuous::update_continuous_sync_settings,
+            continuous::run_continuous_sync_now,
         ])
         .run(tauri::generate_context!())
         .expect("error while running AtrisBridge");

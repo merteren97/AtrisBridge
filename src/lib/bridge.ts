@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   BackupExecutionReport,
   BackupPlan,
+  ContinuousSyncStatus,
   EncryptionEnableResult,
   JournalSummary,
   ProviderConnection,
@@ -28,19 +29,19 @@ export async function addWorkspace(name: string, path: string): Promise<Workspac
 }
 
 export async function removeWorkspace(id: string): Promise<void> {
-  return invoke("remove_workspace", { id });
+  return invoke("guarded_remove_workspace", { id });
 }
 
 export async function setWorkspaceSyncMode(id: string, mode: SyncMode): Promise<Workspace> {
-  return invoke<Workspace>("set_workspace_sync_mode", { id, mode });
+  return invoke<Workspace>("guarded_set_workspace_sync_mode", { id, mode });
 }
 
 export async function scanWorkspace(id: string): Promise<ScanReport> {
-  return invoke<ScanReport>("scan_workspace", { id });
+  return invoke<ScanReport>("guarded_scan_workspace", { id });
 }
 
 export async function initializeIgnoreFile(id: string): Promise<boolean> {
-  return invoke<boolean>("initialize_ignore_file", { id });
+  return invoke<boolean>("guarded_initialize_ignore_file", { id });
 }
 
 export async function getJournalSummary(id: string): Promise<JournalSummary> {
@@ -60,15 +61,15 @@ export async function listProviderConnections(): Promise<ProviderConnection[]> {
 }
 
 export async function connectGoogleDrive(): Promise<ProviderConnection> {
-  return invoke<ProviderConnection>("connect_google_drive");
+  return invoke<ProviderConnection>("guarded_connect_google_drive");
 }
 
 export async function disconnectProviderSession(providerId: string): Promise<void> {
-  return invoke("disconnect_provider_session", { providerId });
+  return invoke("guarded_disconnect_provider_session", { providerId });
 }
 
 export async function forgetProvider(providerId: string): Promise<void> {
-  return invoke("forget_provider", { providerId });
+  return invoke("guarded_forget_provider", { providerId });
 }
 
 export async function getWorkspaceRemoteBinding(id: string): Promise<WorkspaceRemoteBinding | null> {
@@ -80,7 +81,7 @@ export async function bindWorkspaceRemote(
   providerId: string,
   remotePath: string,
 ): Promise<WorkspaceRemoteBinding> {
-  return invoke<WorkspaceRemoteBinding>("bind_workspace_remote", { id, providerId, remotePath });
+  return invoke<WorkspaceRemoteBinding>("guarded_bind_workspace_remote", { id, providerId, remotePath });
 }
 
 export async function getWorkspaceEncryptionStatus(id: string): Promise<WorkspaceEncryptionStatus> {
@@ -88,7 +89,7 @@ export async function getWorkspaceEncryptionStatus(id: string): Promise<Workspac
 }
 
 export async function enableWorkspaceEncryption(id: string): Promise<EncryptionEnableResult> {
-  return invoke<EncryptionEnableResult>("enable_workspace_encryption", { id });
+  return invoke<EncryptionEnableResult>("guarded_enable_workspace_encryption", { id });
 }
 
 export async function exportWorkspaceRecoveryKey(id: string): Promise<string> {
@@ -99,11 +100,11 @@ export async function importWorkspaceRecoveryKey(
   id: string,
   recoveryKey: string,
 ): Promise<WorkspaceEncryptionStatus> {
-  return invoke<WorkspaceEncryptionStatus>("import_workspace_recovery_key", { id, recoveryKey });
+  return invoke<WorkspaceEncryptionStatus>("guarded_import_workspace_recovery_key", { id, recoveryKey });
 }
 
 export async function scanRemoteInventory(id: string): Promise<RemoteInventoryReport> {
-  return invoke<RemoteInventoryReport>("scan_remote_inventory", { id });
+  return invoke<RemoteInventoryReport>("guarded_scan_remote_inventory", { id });
 }
 
 export async function getLatestBackupPlan(id: string): Promise<BackupPlan | null> {
@@ -111,11 +112,11 @@ export async function getLatestBackupPlan(id: string): Promise<BackupPlan | null
 }
 
 export async function prepareBackupPlan(id: string): Promise<BackupPlan> {
-  return invoke<BackupPlan>("prepare_backup_plan", { id });
+  return invoke<BackupPlan>("guarded_prepare_backup_plan", { id });
 }
 
 export async function executeBackupPlan(planId: string): Promise<BackupExecutionReport> {
-  return invoke<BackupExecutionReport>("execute_backup_plan", { planId });
+  return invoke<BackupExecutionReport>("guarded_execute_backup_plan", { planId });
 }
 
 export async function getLatestRestorePlan(id: string): Promise<RestorePlan | null> {
@@ -123,11 +124,11 @@ export async function getLatestRestorePlan(id: string): Promise<RestorePlan | nu
 }
 
 export async function prepareRestorePlan(id: string): Promise<RestorePlan> {
-  return invoke<RestorePlan>("prepare_restore_plan", { id });
+  return invoke<RestorePlan>("guarded_prepare_restore_plan", { id });
 }
 
 export async function executeRestorePlan(planId: string): Promise<RestoreExecutionReport> {
-  return invoke<RestoreExecutionReport>("execute_restore_plan", { planId });
+  return invoke<RestoreExecutionReport>("guarded_execute_restore_plan", { planId });
 }
 
 export async function getLatestSyncPlan(id: string): Promise<SyncPlan | null> {
@@ -135,11 +136,11 @@ export async function getLatestSyncPlan(id: string): Promise<SyncPlan | null> {
 }
 
 export async function prepareSyncPlan(id: string): Promise<SyncPlan> {
-  return invoke<SyncPlan>("prepare_sync_plan", { id });
+  return invoke<SyncPlan>("guarded_prepare_sync_plan", { id });
 }
 
 export async function executeSyncPlan(planId: string): Promise<SyncExecutionReport> {
-  return invoke<SyncExecutionReport>("execute_sync_plan", { planId });
+  return invoke<SyncExecutionReport>("guarded_execute_sync_plan", { planId });
 }
 
 export async function listSyncRecoveries(id: string): Promise<SyncRecoveryEntry[]> {
@@ -147,5 +148,32 @@ export async function listSyncRecoveries(id: string): Promise<SyncRecoveryEntry[
 }
 
 export async function restoreSyncRecovery(recoveryId: string): Promise<SyncRecoveryEntry> {
-  return invoke<SyncRecoveryEntry>("restore_sync_recovery", { recoveryId });
+  return invoke<SyncRecoveryEntry>("guarded_restore_sync_recovery", { recoveryId });
+}
+
+export async function getContinuousSyncStatus(id: string): Promise<ContinuousSyncStatus> {
+  return invoke<ContinuousSyncStatus>("continuous_sync_status", { id });
+}
+
+export async function setContinuousSyncEnabled(
+  id: string,
+  enabled: boolean,
+): Promise<ContinuousSyncStatus> {
+  return invoke<ContinuousSyncStatus>("set_continuous_sync_enabled", { id, enabled });
+}
+
+export async function updateContinuousSyncSettings(
+  id: string,
+  autoApplySafe: boolean,
+  remotePollSeconds: number,
+): Promise<ContinuousSyncStatus> {
+  return invoke<ContinuousSyncStatus>("update_continuous_sync_settings", {
+    id,
+    autoApplySafe,
+    remotePollSeconds,
+  });
+}
+
+export async function runContinuousSyncNow(id: string): Promise<ContinuousSyncStatus> {
+  return invoke<ContinuousSyncStatus>("run_continuous_sync_now", { id });
 }
