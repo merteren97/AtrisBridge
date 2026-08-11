@@ -2,7 +2,7 @@
 
 AtrisBridge is a local-first desktop application for keeping engineering and software project workspaces portable, inspectable, and ready for safe synchronization across machines.
 
-> **Status:** early alpha (`0.1.0-alpha.7`). Local inventory, durable SQLite state, restricted Google Drive transport, guarded backup/restore, conflict-aware two-way synchronization, OS-backed credential persistence, optional client-side content encryption, and conservative continuous watch mode are implemented.
+> **Status:** early alpha (`0.1.0-alpha.9`). Local inventory, durable SQLite state, restricted Google Drive transport, guarded backup/restore, conflict-aware two-way synchronization, OS-backed credential persistence, optional client-side content encryption, conservative continuous watch, remembered AtrisHub desktop sessions, system-tray runtime, global sync activity, signed updates, and Windows/Linux release packaging are implemented.
 
 [Türkçe README](README_TR.md)
 
@@ -19,11 +19,12 @@ Moving active projects between development machines often turns into manual ZIP 
 - OS-native secure credential storage,
 - optional client-side content encryption,
 - continuous reconciliation that treats filesystem events as hints rather than synchronization truth,
+- a tray-resident desktop runtime for unattended watch mode,
 - provider-independent architecture with Google Drive as the first transport.
 
 ## What works today
 
-Phase 0 through Phase 8 currently provide:
+Phase 0 through Phase 9 currently provide:
 
 - Tauri 2 + React + TypeScript desktop shell,
 - local workspace management and native directory picker,
@@ -45,14 +46,20 @@ Phase 0 through Phase 8 currently provide:
 - optional per-workspace client-side **content encryption** using the restricted crypt transport,
 - `AB1-...` recovery-key export/import for encrypted workspaces,
 - native per-workspace filesystem watch with event debounce/coalescing,
-- bounded periodic provider reconciliation for remote-side changes,
+- bounded provider reconciliation for remote-side changes,
 - optional automatic application of **safe transfer-only** plans,
 - automatic fail-closed handoff to manual review for conflicts, blocked paths, scanner uncertainty, or every deletion action,
 - backend ownership guards that prevent manual mutating IPC from racing an active watch loop,
-- fresh evidence before planning and again before execution,
-- Linux CI for frontend and Rust validation.
+- remembered AtrisHub desktop account sessions with refresh credentials held only in the OS vault,
+- system tray with explicit open/hide/quit lifecycle,
+- close-to-tray behavior so configured watchers can keep running,
+- global Activity Center for active cycles, queued operations, conflicts, and per-workspace watcher state,
+- opt-in desktop alerts with in-app fallback,
+- signed Tauri updater with preview/stable channel support,
+- owner-controlled Windows x64 and Linux x64 package/release workflows,
+- reproducible npm/Cargo lockfiles and CI validation.
 
-Removing a workspace removes AtrisBridge coordination metadata and never deletes project files. Recovery keys are also deliberately not automatically destroyed from the OS credential vault when workspace metadata is removed; silent key destruction could make remote ciphertext unrecoverable.
+Removing a workspace removes AtrisBridge coordination metadata and never deletes project files. Recovery keys are deliberately not automatically destroyed from the OS credential vault when workspace metadata is removed; silent key destruction could make remote ciphertext unrecoverable.
 
 ## Synchronization safety
 
@@ -70,60 +77,45 @@ For two-way synchronization:
 
 Provider and filesystem state are refreshed before execution and journal completion remains evidence-locked.
 
-## Phase 8 continuous watch mode
+## Continuous watch and desktop runtime
 
 Continuous watch mode reduces repeated manual scanning without bypassing AtrisBridge's planner/executor.
 
 - native filesystem events are only **dirty signals**,
-- local bursts settle behind a 1.8 second debounce/coalescing window,
+- local bursts settle behind a debounce/coalescing window,
 - every cycle performs a full scanner pass and fresh provider observation,
-- a bounded Drive reconciliation poll detects changes made by another machine while local files are quiet,
+- bounded Drive reconciliation detects changes made by another machine while local files are quiet,
 - only one automatic cycle may own a workspace at a time,
 - `Auto-apply safe transfers` is a separate opt-in and defaults off,
-- when auto-apply is off, safe upload/download plans are surfaced as **review**, not destructive attention,
 - conflicts, blocked paths, incomplete scanner evidence, encryption/provider uncertainty, and every deletion action fail closed,
-- Phase 8 **never automatically applies deletion actions**,
+- watch mode **never automatically applies deletion actions**,
 - manual mutating commands are rejected by the Rust IPC boundary while watch mode owns the workspace.
 
-Watch settings and the latest cycle state are durable in SQLite and configured watchers resume only after interrupted-transfer recovery has completed during startup.
+On desktop, closing the main window hides AtrisBridge to the system tray instead of stopping configured watchers. The tray exposes explicit Open, Hide, and Quit actions. The Activity Center observes the same durable journal/runtime state and does not create a second synchronization authority or bypass review gates.
 
-See [docs/continuous-watch.md](docs/continuous-watch.md) for the scheduler, state, retry, and safety model.
+See [docs/continuous-watch.md](docs/continuous-watch.md) and [docs/desktop-runtime.md](docs/desktop-runtime.md).
 
-## Secure credential storage
+## Secure credentials and AtrisHub account
 
-Google Drive OAuth credentials are persisted through the operating system's secure credential facility and lazily reloaded into the Rust process when needed.
+Provider credentials, encryption secrets, and remembered AtrisHub refresh credentials stay out of React, SQLite, `.env`, synchronized workspaces, and repository files whenever they are secret material. OS-backed secure storage is used for persisted credentials.
 
-Credentials are not stored in:
+AtrisHub sign-in remains optional: local AtrisBridge workflows continue to function without an account. Remembered sessions use rotating refresh credentials, while short-lived access credentials remain process-local.
 
-- SQLite,
-- `rclone.conf`,
-- `.env` files,
-- synchronized workspaces,
-- repository files.
-
-Removing the saved provider credential requires a new Google authorization before cloud operations can resume. Forgetting the provider also removes its AtrisBridge provider metadata; it does not delete Drive data.
+See [docs/security.md](docs/security.md) and [docs/atrishub-account.md](docs/atrishub-account.md).
 
 ## Optional client-side encryption
 
-Client-side encryption is opt-in per workspace. It can only be attached before the workspace has an accepted synchronized baseline, and the managed remote root must be empty. AtrisBridge deliberately does **not** perform an in-place plaintext-to-ciphertext migration.
+Client-side encryption is opt-in per workspace and is only attached before an accepted synchronized baseline exists and while the managed remote root is empty. AtrisBridge deliberately does not perform an in-place plaintext-to-ciphertext migration.
 
-When enabled:
+Regular file contents are encrypted locally before Drive receives them. The first encrypted transport intentionally leaves filename encryption disabled, so **file contents are encrypted while filenames and directory structure remain visible to the storage provider**. Missing/corrupt encrypted namespace or key-verification evidence is treated as unsafe provider state and fails closed.
 
-- regular file contents are encrypted locally before Drive receives them,
-- decrypted bytes are produced locally during restore/sync,
-- the encryption master key is represented by an `AB1-...` recovery key,
-- the recovery key is stored in the OS credential vault,
-- users can explicitly export or import the recovery key,
-- local BLAKE3 and remote ciphertext provider evidence stay separate,
-- encrypted Drive objects are still addressed by exact provider ID for reviewed Trash operations.
+## Release and updater
 
-### Metadata limitation
+The release foundation packages Windows x64 NSIS/MSI and Linux x64 AppImage/DEB artifacts. rclone is pinned and SHA-256 verified before packaging rather than committed as a binary. The Tauri updater uses signed updater artifacts and AtrisHub channel policy while package bytes remain on GitHub Releases.
 
-The first encrypted transport intentionally uses rclone crypt with filename encryption disabled. **File contents are encrypted, but filenames and directory structure remain visible to the storage provider.** This preserves AtrisBridge's current exact path, provider-ID, collision, conflict, and deletion evidence model.
+See [docs/release-updater.md](docs/release-updater.md).
 
-A missing/corrupt encrypted namespace or key-verification sentinel is treated as an unsafe provider state, not as a clean empty remote inventory. AtrisBridge fails closed instead of converting that uncertainty into deletion intent.
-
-## Planned roadmap
+## Roadmap
 
 1. **Phase 0/1 — foundation and local inventory** ✅
 2. **Phase 2 — SQLite sync journal and durable file state** ✅
@@ -133,9 +125,10 @@ A missing/corrupt encrypted namespace or key-verification sentinel is treated as
 6. **Phase 6 — conflict-aware two-way synchronization** ✅
 7. **Phase 7 — persistent secure credential storage + optional client-side content encryption** ✅
 8. **Phase 8 — continuous watch mode + conservative scheduler** ✅
-9. **Phase 9+ — tray/progress/notifications, additional providers, and cross-platform release pipeline**
+9. **Phase 9 — tray lifecycle, activity/progress UX, alerts, AtrisHub desktop session, signed Windows/Linux release foundation** ✅
+10. **Phase 10+ — additional storage providers, broader platform packaging, and later product integrations**
 
-See [docs/architecture.md](docs/architecture.md), [docs/sync-engine.md](docs/sync-engine.md), [docs/security.md](docs/security.md), [docs/continuous-watch.md](docs/continuous-watch.md), [docs/rclone-transport.md](docs/rclone-transport.md), [docs/backup-engine.md](docs/backup-engine.md), and [docs/restore-engine.md](docs/restore-engine.md).
+Architecture and subsystem details live under [`docs/`](docs/architecture.md).
 
 ## Development
 
@@ -154,15 +147,14 @@ npm run sidecar:prepare
 npm run tauri:dev
 ```
 
-`sidecar:prepare` downloads rclone `v1.74.4` from the official release host, verifies the platform-specific SHA-256 checksum, and places the executable under `src-tauri/binaries/`. The binary is ignored by Git.
-
 Validation:
 
 ```bash
 npm run build
+npm run test:release-contract
 cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
-cargo test --manifest-path src-tauri/Cargo.toml --lib
-cargo check --manifest-path src-tauri/Cargo.toml
+cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+cargo check --locked --manifest-path src-tauri/Cargo.toml
 ```
 
 ## `.atrisbridgeignore`
