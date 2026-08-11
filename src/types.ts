@@ -40,3 +40,38 @@ export interface JournalSummary {
   pendingOperations: number;
   lastScanAt: string | null;
 }
+
+export interface RcloneStatus {
+  available: boolean;
+  version: string | null;
+  requiredVersion: string;
+  source: string | null;
+  message: string | null;
+}
+
+export interface ProviderConnection {
+  id: string;
+  providerType: "google_drive";
+  displayName: string;
+  accountLabel: string | null;
+  createdAt: string;
+  lastVerifiedAt: string | null;
+  sessionActive: boolean;
+}
+
+export interface WorkspaceRemoteBinding {
+  workspaceId: string;
+  providerId: string;
+  remotePath: string;
+  createdAt: string;
+  lastInventoryAt: string | null;
+}
+
+export interface RemoteInventoryReport {
+  workspaceId: string;
+  providerId: string;
+  remotePath: string;
+  scannedAt: string;
+  fileCount: number;
+  totalBytes: number;
+}

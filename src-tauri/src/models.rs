@@ -75,3 +75,56 @@ pub struct JournalSummary {
     pub pending_operations: u64,
     pub last_scan_at: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RcloneStatus {
+    pub available: bool,
+    pub version: Option<String>,
+    pub required_version: String,
+    pub source: Option<String>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderConnection {
+    pub id: String,
+    pub provider_type: String,
+    pub display_name: String,
+    pub account_label: Option<String>,
+    pub created_at: String,
+    pub last_verified_at: Option<String>,
+    pub session_active: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceRemoteBinding {
+    pub workspace_id: String,
+    pub provider_id: String,
+    pub remote_path: String,
+    pub created_at: String,
+    pub last_inventory_at: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteInventoryReport {
+    pub workspace_id: String,
+    pub provider_id: String,
+    pub remote_path: String,
+    pub scanned_at: String,
+    pub file_count: u64,
+    pub total_bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct RemoteFileObservation {
+    pub relative_path: String,
+    pub remote_id: Option<String>,
+    pub size: u64,
+    pub modified_at: Option<String>,
+    pub checksum_type: Option<String>,
+    pub checksum: Option<String>,
+}

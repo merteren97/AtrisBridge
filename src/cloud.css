@@ -1,0 +1,30 @@
+.cloud-card { margin-bottom: 18px; border: 1px solid #202a34; border-radius: 13px; background: #0f151b; overflow: hidden; }
+.cloud-card-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 17px 18px; border-bottom: 1px solid #1e2832; }
+.cloud-title { display: flex; align-items: center; gap: 11px; }
+.cloud-icon { width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid #254740; border-radius: 9px; background: #10231f; color: #4bd3c0; }
+.read-only-pill { display: inline-flex; align-items: center; gap: 5px; padding: 4px 8px; border: 1px solid #29433f; border-radius: 999px; color: #66cdbf; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+.cloud-grid { display: grid; grid-template-columns: .8fr 1.2fr; }
+.cloud-runtime, .cloud-provider { min-width: 0; padding: 16px 18px; }
+.cloud-runtime { border-right: 1px solid #1e2832; }
+.cloud-runtime small, .cloud-runtime strong, .cloud-runtime span, .cloud-provider small, .cloud-provider strong, .cloud-provider span { display: block; }
+.cloud-runtime small, .cloud-provider small { color: #687481; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
+.cloud-runtime strong, .cloud-provider strong { margin-top: 5px; color: #d7dfe7; font-size: 13px; }
+.cloud-runtime span, .cloud-provider span { margin-top: 4px; color: #65717d; font-size: 10px; line-height: 1.5; }
+.cloud-provider { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.cloud-provider-actions { display: flex; align-items: center; gap: 7px; }
+.cloud-action { flex: 0 0 auto; border: 1px solid #29343e; background: #141b22; }
+.danger-icon { color: #e88f9b; }
+.remote-binding-row { display: grid; grid-template-columns: minmax(180px, .75fr) minmax(360px, 1.5fr); gap: 14px 20px; padding: 16px 18px; border-top: 1px solid #1e2832; background: #0d1318; }
+.remote-binding-copy { display: flex; gap: 9px; color: #7e8b96; }
+.remote-binding-copy svg { flex: 0 0 auto; margin-top: 1px; color: #4fcdbc; }
+.remote-binding-copy strong, .remote-binding-copy span { display: block; }
+.remote-binding-copy strong { color: #cbd4dc; font-size: 11px; }
+.remote-binding-copy span { margin-top: 3px; color: #5f6a75; font-size: 9px; line-height: 1.5; }
+.remote-binding-controls { display: grid; grid-template-columns: minmax(160px, 1fr) auto auto; gap: 7px; }
+.remote-binding-controls input { min-width: 0; border: 1px solid #29343e; border-radius: 8px; padding: 9px 10px; outline: none; background: #0b1116; color: #c4ced7; font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace; font-size: 10px; }
+.remote-binding-controls input:focus { border-color: #3e7169; }
+.remote-binding-status { grid-column: 2; display: flex; justify-content: space-between; gap: 12px; color: #66727d; font-size: 9px; }
+.cloud-security-note { display: flex; align-items: center; gap: 7px; margin: 0; padding: 10px 18px; border-top: 1px solid #1e2832; color: #688078; background: #0d1515; font-size: 9px; line-height: 1.5; }
+.cloud-security-note svg { flex: 0 0 auto; color: #4bc7b6; }
+@media (max-width: 1050px) { .cloud-grid { grid-template-columns: 1fr; } .cloud-runtime { border-right: 0; border-bottom: 1px solid #1e2832; } .remote-binding-row { grid-template-columns: 1fr; } .remote-binding-status { grid-column: 1; } }
+@media (max-width: 760px) { .cloud-provider { align-items: flex-start; flex-direction: column; } .remote-binding-controls { grid-template-columns: 1fr; } .remote-binding-controls > button { width: 100%; } .remote-binding-status { flex-direction: column; gap: 4px; } }

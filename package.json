@@ -1,12 +1,13 @@
 {
   "name": "atrisbridge",
   "private": true,
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "type": "module",
   "scripts": {
     "dev": "vite --port 1420",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "sidecar:prepare": "node scripts/prepare-rclone.mjs",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"
