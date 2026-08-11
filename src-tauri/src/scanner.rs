@@ -274,6 +274,10 @@ fn is_builtin_ignored(relative: &Path, is_dir: bool) -> bool {
         return true;
     }
 
+    if name.starts_with(".atrisbridge-") && (name.ends_with(".part") || name.ends_with(".bak")) {
+        return true;
+    }
+
     relative
         .extension()
         .and_then(|value| value.to_str())
@@ -351,6 +355,14 @@ mod tests {
             false
         ));
         assert!(is_builtin_ignored(Path::new(".env.local"), false));
+        assert!(is_builtin_ignored(
+            Path::new("src/.atrisbridge-sync-abcdef0123456789.part"),
+            false
+        ));
+        assert!(is_builtin_ignored(
+            Path::new("src/.atrisbridge-abcdef0123456789.bak"),
+            false
+        ));
         assert!(!is_builtin_ignored(Path::new("src/main.rs"), false));
     }
 

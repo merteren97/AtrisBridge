@@ -1,111 +1,180 @@
 # Sync Engine Design
 
-Synchronization is intentionally staged. Phase 0/1 performs local inventory work; Phase 2 persists that inventory and synchronization intent in a restart-safe SQLite journal.
+AtrisBridge owns synchronization semantics. Provider transports supply observations and narrowly approved mutations; they do not decide which copy wins.
 
-## Local inventory
+## Evidence model
 
-The scanner:
+Every synchronization decision is based on three evidence classes kept separately in SQLite:
 
-1. validates the workspace root,
-2. reads `.atrisbridgeignore` when present,
-3. applies non-optional safety exclusions,
-4. does not follow symbolic links,
-5. recursively walks regular directories,
-6. hashes regular files with BLAKE3,
-7. returns aggregate statistics and a bounded UI preview,
-8. passes the complete inventory to the durable journal,
-9. records a scan history row and the latest successful scan timestamp.
+1. **Current local observation** — presence, size, modification metadata, BLAKE3.
+2. **Current remote observation** — presence, provider object ID, size, provider checksum type/value.
+3. **Last successfully synchronized baseline** — local BLAKE3 plus remote provider checksum evidence accepted only after a verified transfer.
 
-Unreadable entries are surfaced as warnings rather than silently interpreted as deletions.
+Modification time is useful metadata but is never sufficient conflict authority.
 
-## Built-in exclusions
+The local scanner applies built-in secret/generated exclusions, `.atrisbridgeignore`, and no-symlink traversal. AtrisBridge transfer/recovery `.part` and `.bak` artifacts are also excluded so recovery mechanics cannot become project content accidentally.
 
-The current safety baseline excludes:
+## Durable journal
 
-- `.git`, `.vs`, `.idea`, `.next`,
-- `node_modules`, `dist`, `build`, `bin`, `obj`, `target`, `coverage`,
-- `.env` and `.env.*`,
-- `.pem`, `.key`, `.pfx`, `.p12` files.
+The core `file_entries` row keeps local, remote, and baseline evidence for each relative path. Phase-specific plan tables are additive:
 
-Custom project rules are applied through `.atrisbridgeignore` using gitignore-compatible syntax.
+- `backup_plans` / backup items — Phase 4 local → Drive,
+- `restore_plans` / restore items — Phase 5 Drive → local,
+- `sync_plans` / `sync_plan_items` — Phase 6 conflict-aware two-way plans,
+- `sync_recovery_entries` — verified recovery copies retained after a Phase 6 remote-deletion → local-delete operation.
 
-## Durable SQLite journal
+Phase 6 plan items persist the exact evidence reviewed at planning time: local presence/hash/size, remote presence/ID/size/checksum, baseline local hash, baseline remote checksum, action, state, errors, and any local recovery evidence required around an apply operation.
 
-Phase 2 stores state in `atrisbridge.db` under the OS application-data directory. SQLite runs with foreign keys enabled, WAL journaling, and a bounded busy timeout.
+## Two-Way mode is explicit
 
-The core tables are:
+A workspace must be switched explicitly to `two_way`. Changing the mode performs no synchronization.
 
-- `workspaces` — local roots and workspace-level configuration,
-- `scan_runs` — immutable scan summaries and warnings,
-- `file_entries` — local, remote, and last-synchronized observations per relative path,
-- `pending_operations` — durable future transport actions,
-- `app_meta` — migration markers and application-level metadata.
+The user flow is always:
 
-Each file entry can retain:
+1. **Prepare sync** — refresh local inventory and remote inventory, classify every path, persist a plan, mutate nothing.
+2. **Review** — inspect uploads, downloads, deletion convergence, conflicts, and blocks.
+3. **Run sync** — refresh both inventories again, require plan evidence to remain unchanged, and execute only items that are still safe.
 
-```text
-workspace_id
-relative_path
-local_present
-local_size
-local_modified_at
-local_hash
-remote_id
-remote_size
-remote_modified_at
-remote_hash
-last_synced_hash
-state
-tombstone
-first_seen_at
-last_seen_at
-last_synced_at
-last_seen_scan_id
-```
+A running backup, restore, or another two-way operation blocks a concurrent two-way execution for that workspace.
 
-This separation makes comparisons explicit and restart-safe.
+## Phase 6 decision table
 
-## Local reconciliation states
+| Local current state | Remote current state | Baseline | Decision |
+| --- | --- | --- | --- |
+| present | absent | none | `upload_create` |
+| absent | present with stable ID/size/MD5 | none | `download_create` |
+| present | present | none | `blocked` — unverified overlap |
+| unchanged | unchanged | verified | skip |
+| changed | unchanged | verified | `upload_update` |
+| unchanged | changed | verified | `download_update` |
+| changed | changed | verified | `conflict` |
+| deleted | unchanged | verified | `remote_trash` |
+| deleted | changed | verified | `conflict` — delete/modify |
+| unchanged | deleted | verified | `local_delete` |
+| changed | deleted | verified | `conflict` — delete/modify |
+| deleted | deleted | verified | `acknowledge_delete` |
 
-The journal currently derives the following states while scanning:
+An incomplete historical baseline is blocked rather than silently upgraded into authority. Case-insensitive path collisions, unsafe/non-portable paths, symlink traversal, ignored paths, and missing provider evidence are also blocked.
 
-- `local_only` — present locally with no synchronized baseline,
-- `synced` — current local hash matches the last synchronized hash and no known remote divergence exists,
-- `local_modified` — local content changed relative to the synchronized baseline,
-- `local_deleted` — a previously synchronized local file disappeared,
-- `removed_before_sync` — an unsynchronized local-only file disappeared; this never creates delete intent,
-- `remote_only` — reserved for a known remote file that is not present locally,
-- `remote_modified` — local still matches baseline but known remote state changed,
-- `conflict` — both observations cannot be reconciled safely without an explicit decision.
+## Upload and download execution
 
-Remote states become fully active when Phase 3 introduces a provider transport.
+Phase 6 reuses the verified Phase 4/5 transfer patterns.
 
-## Tombstone rule
+### Upload
 
-A missing file is not automatically equivalent to an authorized delete.
+For an approved local change AtrisBridge:
 
-AtrisBridge only creates a tombstone when a missing local file has a known `last_synced_hash` and there is no known remote divergence. An unsynchronized file that disappears becomes `removed_before_sync` with no tombstone. If remote state is already known to have changed, the result is a conflict rather than delete intent.
+1. requires the current SQLite evidence to equal the reviewed plan evidence,
+2. resolves a regular local file without escaping the workspace,
+3. recomputes local BLAKE3 + size,
+4. for create, verifies the remote path is still absent; for update, verifies remote ID/size/checksum,
+5. performs a single restricted upload,
+6. verifies the local file did not change during transfer,
+7. requires provider size/checksum evidence for the resulting object,
+8. commits a new synchronized baseline only if the current journal row still equals the exact planned evidence.
 
-Future provider deletion will still verify remote state and prefer provider trash/recoverable deletion instead of permanent removal.
+### Download
 
-## Pending operation journal
+For an approved remote change AtrisBridge:
 
-The Phase 2 schema already reserves durable operations for:
+1. requires current journal evidence to equal the plan,
+2. performs targeted Drive preflight,
+3. downloads to a unique hidden sibling `.part` path,
+4. verifies staging size + MD5 against the reviewed Drive evidence and stores local BLAKE3,
+5. performs final remote stat and local target validation,
+6. persists an `applying` recovery state,
+7. creates a `.bak` for an update before replacing the target,
+8. fingerprints the applied target,
+9. commits the new baseline only against the exact planned journal evidence,
+10. removes temporary recovery content only after the journal commit succeeds.
 
-- upload,
-- download,
-- remote trash,
-- local restore,
-- keep-both conflict resolution.
+Interrupted apply states are recovered conservatively at application startup; uncertain content is preserved for manual inspection.
 
-No transport code creates or executes these operations yet. Phase 3/4 will add a planner that writes operations only after provider state has been reconciled.
+## Deletion convergence
 
-## Planned synchronization order
+Deletion propagation is deliberately stricter than content transfer.
 
-1. Backup: local → remote, no remote-to-local mutation.
-2. Pull/restore: explicit remote → local operation with overwrite protection.
-3. Two-way: only after conflict and tombstone semantics are tested.
+### Local deletion → Google Drive Trash
 
-## Conflict rule
+A local deletion can propagate only when:
 
-Two sides changing relative to the same `last_synced_hash` is a conflict. Modification time alone is never sufficient to auto-resolve it.
+- the path had a complete synchronized baseline,
+- the current Drive object still has the reviewed ID, size, and MD5,
+- the local path is still physically absent during live preflight immediately before the provider mutation.
+
+AtrisBridge then moves the **exact reviewed Google Drive file ID** to Trash using a narrow Drive API request. Permanent deletion is not exposed.
+
+After the request, the managed remote path is checked again. If another object now occupies the same path, the operation does not treat that new object as the deleted object or clear uncertain evidence. A fresh reviewed plan is required.
+
+Trash is a recoverable provider action, but AtrisBridge does not claim an atomic provider compare-and-swap between its checksum preflight and the Trash request. Another Drive client can still change the same object in that interval.
+
+### Remote deletion → recoverable local delete
+
+A remote deletion can remove a local file only when:
+
+- the local BLAKE3 + size still equal the synchronized baseline,
+- targeted Drive checks continue to prove the remote path is absent,
+- the path remains safe and is not ignored.
+
+Before local removal AtrisBridge:
+
+1. copies the local file into its OS application-data recovery area,
+2. verifies recovery BLAKE3 + size,
+3. flushes that recovery file,
+4. checks remote absence again,
+5. persists an `applying` state containing recovery evidence,
+6. re-fingerprints the local source,
+7. performs another live remote-absence check,
+8. removes the local workspace file,
+9. commits deletion convergence, recovery metadata, and item completion in one SQLite transaction.
+
+If journal completion fails, AtrisBridge restores the original local file only when the recovery copy still proves the expected fingerprint.
+
+### Both sides already absent
+
+`acknowledge_delete` clears the old baseline only after live local and targeted remote absence checks. This turns a previously synchronized deleted path into a fully converged absent state without deleting anything.
+
+## User-restorable local recovery
+
+Verified recovery copies created by `local_delete` remain under AtrisBridge application data and appear in the Two-Way UI.
+
+**Restore locally** is intentionally not a sync operation. It:
+
+- requires no backup/restore/two-way execution to be active,
+- validates the recovery file is canonical under AtrisBridge's recovery root,
+- verifies its BLAKE3 + size,
+- refuses ignored/unsafe paths and any existing destination,
+- stages and verifies the copy before placement,
+- updates the file journal to `local_only`,
+- marks the recovery record restored in the same transaction,
+- never modifies Google Drive.
+
+The recreated local-only file is considered by the next fresh reviewed two-way plan.
+
+## Conflicts
+
+Phase 6 deliberately has no last-write-wins policy.
+
+- **modify/modify:** both current contents differ from the shared baseline → conflict.
+- **local delete / remote modify:** preserve the remote modification → conflict.
+- **remote delete / local modify:** preserve the local modification → conflict.
+- **unverified overlap:** both sides exist without an accepted baseline → blocked.
+
+Phase 6 surfaces these states and leaves both sides untouched. The user can resolve content manually and then prepare a fresh plan. Provider-native automatic merge or keep-both conflict resolution is future work rather than an implicit heuristic.
+
+## Race boundaries
+
+Fresh inventory and plan revalidation close stale-journal hazards, but separate filesystem/provider calls cannot create a distributed atomic transaction.
+
+AtrisBridge therefore uses:
+
+- exact reviewed evidence in SQLite conditional updates,
+- targeted provider preflight,
+- repeated live absence checks around destructive-looking operations,
+- exact-ID Drive Trash instead of path-based remote deletion,
+- postflight remote checks,
+- local staging/recovery copies,
+- user review before execution,
+- fail-closed handling when evidence changes.
+
+The remaining provider-side race windows are documented rather than hidden. Continuous watching/automatic execution is intentionally deferred until later phases.

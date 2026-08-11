@@ -1,4 +1,3 @@
-use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use tauri::AppHandle;
 
