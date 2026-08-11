@@ -1,16 +1,20 @@
 {
   "name": "atrisbridge",
   "private": true,
-  "version": "0.1.0-alpha.7",
+  "version": "0.1.0-alpha.9",
   "type": "module",
   "scripts": {
     "dev": "vite --port 1420",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "sidecar:prepare": "node scripts/prepare-rclone.mjs",
+    "sidecar:prepare:release": "node scripts/prepare-release-rclone.mjs",
+    "sidecar:verify:release": "node scripts/verify-release-rclone.mjs",
+    "icons:prepare": "tauri icon src-tauri/icons/icon.png",
+    "test:release-contract": "node --test .github/scripts/release-contract.test.mjs",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "npm run sidecar:prepare:release && npm run icons:prepare && node .github/scripts/create-package-build-config.mjs src-tauri/tauri.package.conf.json && tauri build --config src-tauri/tauri.package.conf.json"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

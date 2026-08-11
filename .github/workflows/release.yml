@@ -1,0 +1,253 @@
+name: Release AtrisBridge Desktop
+run-name: Release AtrisBridge ${{ inputs.release_version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: "v0.1.0-alpha.8, v0.1.0-beta.1, v0.1.0-rc.1 or v0.1.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: atrisbridge-release
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.release_version }}
+
+jobs:
+  build:
+    if: ${{ github.repository == 'merteren97/AtrisBridge' && github.actor == 'merteren97' && github.triggering_actor == 'merteren97' && github.ref == 'refs/heads/main' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            releaseTarget: windows-x86_64
+            rustTarget: x86_64-pc-windows-msvc
+            bundles: nsis,msi
+          - os: ubuntu-22.04
+            releaseTarget: linux-x86_64
+            rustTarget: x86_64-unknown-linux-gnu
+            bundles: appimage,deb
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+
+    steps:
+      - name: Validate release tag and select channel
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]]; then
+            echo "Unsupported release tag: $RELEASE_TAG"
+            exit 1
+          fi
+          if [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            channel=stable
+          else
+            channel=preview
+          fi
+          echo "ATRISBRIDGE_UPDATE_CHANNEL=$channel" >> "$GITHUB_ENV"
+          echo "ATRISBRIDGE_UPDATE_ENDPOINT=https://atrishub.com/api/desktop/v1/releases/atrisbridge/{{target}}/{{arch}}/{{current_version}}?channel=$channel" >> "$GITHUB_ENV"
+
+      - name: Checkout exact main revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.23.1
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          targets: ${{ matrix.rustTarget }}
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: src-tauri -> target
+          shared-key: release-${{ matrix.releaseTarget }}
+          cache-on-failure: true
+
+      - name: Install Linux desktop dependencies
+        if: startsWith(matrix.os, 'ubuntu')
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            unzip \
+            libsecret-1-dev \
+            libxdo-dev \
+            libxkbcommon-dev
+
+      - name: Install locked dependencies
+        run: npm ci --include=dev --include=optional --prefer-offline --no-audit --no-fund
+
+      - name: Require updater signing configuration
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$TAURI_SIGNING_PRIVATE_KEY" || { echo "TAURI_SIGNING_PRIVATE_KEY is not configured"; exit 1; }
+          test -n "$TAURI_UPDATER_PUBLIC_KEY" || { echo "TAURI_UPDATER_PUBLIC_KEY is not configured"; exit 1; }
+
+      - name: Apply requested release version
+        shell: bash
+        run: node .github/scripts/apply-release-version.mjs "$RELEASE_TAG"
+
+      - name: Verify release lockfile surfaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const expected = process.env.RELEASE_TAG.replace(/^v/, '');
+          const pkg = require('./package.json');
+          const lock = require('./package-lock.json');
+          const tauri = JSON.parse(fs.readFileSync('./src-tauri/tauri.conf.json', 'utf8'));
+          if (pkg.version !== expected || lock.version !== expected || lock.packages?.['']?.version !== expected || tauri.version !== expected) {
+            throw new Error('JavaScript/Tauri release version surfaces are inconsistent.');
+          }
+          const cargo = fs.readFileSync('./src-tauri/Cargo.toml', 'utf8');
+          const cargoLock = fs.readFileSync('./src-tauri/Cargo.lock', 'utf8');
+          if (!cargo.includes(`version = "${expected}"`) || !cargoLock.includes(`name = "atrisbridge"\nversion = "${expected}"`)) {
+            throw new Error('Rust release version surfaces are inconsistent.');
+          }
+          NODE
+
+      - name: Stage and verify pinned rclone
+        run: npm run sidecar:prepare:release && npm run sidecar:verify:release
+
+      - name: Generate platform icons
+        run: npm run icons:prepare
+
+      - name: Generate signed-updater build config
+        env:
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+        run: node .github/scripts/create-updater-build-config.mjs src-tauri/tauri.release.conf.json "$RELEASE_TAG"
+
+      - name: Import optional Windows code-signing certificate
+        if: startsWith(matrix.os, 'windows') && env.WINDOWS_CERTIFICATE != ''
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $certificatePath = Join-Path $env:RUNNER_TEMP "atrisbridge-code-signing.pfx"
+          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $certificate = Import-PfxCertificate -FilePath $certificatePath -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          if (-not $certificate.Thumbprint) { throw "Windows signing certificate import failed." }
+          "WINDOWS_CERTIFICATE_THUMBPRINT=$($certificate.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Configure optional Windows code signing
+        if: startsWith(matrix.os, 'windows') && env.WINDOWS_CERTIFICATE != ''
+        run: node .github/scripts/configure-windows-signing.mjs src-tauri/tauri.release.conf.json
+
+      - name: Build desktop packages and updater signatures
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+        run: npm run tauri -- build --target "${{ matrix.rustTarget }}" --bundles "${{ matrix.bundles }}" --config src-tauri/tauri.release.conf.json
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: atrisbridge-${{ matrix.releaseTarget }}-${{ env.RELEASE_TAG }}
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+          path: |
+            src-tauri/target/**/release/bundle/**/*.exe
+            src-tauri/target/**/release/bundle/**/*.msi
+            src-tauri/target/**/release/bundle/**/*.AppImage
+            src-tauri/target/**/release/bundle/**/*.AppImage.tar.gz
+            src-tauri/target/**/release/bundle/**/*.deb
+            src-tauri/target/**/release/bundle/**/*.sig
+
+  publish:
+    if: ${{ github.repository == 'merteren97/AtrisBridge' && github.actor == 'merteren97' && github.triggering_actor == 'merteren97' && github.ref == 'refs/heads/main' }}
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout release manifest generator
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.23.1
+      - name: Download verified build artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Validate release artifact set
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$(find release-assets -type f -iname '*-setup.exe' -print -quit)"
+          test -n "$(find release-assets -type f -iname '*.msi' -print -quit)"
+          test -n "$(find release-assets -type f -iname '*.AppImage' -print -quit)"
+          test -n "$(find release-assets -type f -iname '*.AppImage.tar.gz' -print -quit)"
+          test -n "$(find release-assets -type f -iname '*.deb' -print -quit)"
+          test "$(find release-assets -type f -iname '*.sig' | wc -l)" -ge 2
+      - name: Generate updater manifest
+        run: node .github/scripts/generate-updater-manifest.mjs release-assets "$GITHUB_REPOSITORY" "$RELEASE_TAG"
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          FLAGS=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then FLAGS+=(--prerelease); fi
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "AtrisBridge $RELEASE_TAG" \
+              --generate-notes \
+              "${FLAGS[@]}"
+          fi
+          mapfile -d '' RELEASE_ASSETS < <(find release-assets -type f -print0)
+          test "${#RELEASE_ASSETS[@]}" -gt 0
+          gh release upload "$RELEASE_TAG" "${RELEASE_ASSETS[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+      - name: Verify published release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ASSETS="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          grep -Eiq -- '-setup\.exe$' <<< "$ASSETS"
+          grep -Eiq '\.msi$' <<< "$ASSETS"
+          grep -Eiq '\.AppImage$' <<< "$ASSETS"
+          grep -Eiq '\.AppImage\.tar\.gz$' <<< "$ASSETS"
+          grep -Eiq '\.deb$' <<< "$ASSETS"
+          grep -Eiq '\.sig$' <<< "$ASSETS"
+          grep -Fxq 'latest.json' <<< "$ASSETS"

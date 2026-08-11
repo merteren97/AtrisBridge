@@ -3,6 +3,7 @@ use keyring::{Entry, Error as KeyringError};
 const SERVICE_NAME: &str = "com.atrishub.atrisbridge";
 const OAUTH_PREFIX: &str = "oauth.google_drive";
 const CRYPT_PREFIX: &str = "crypt.workspace";
+const ATRIS_REFRESH_ACCOUNT: &str = "auth.atrishub.refresh";
 
 fn entry(account: &str) -> Result<Entry, String> {
     Entry::new(SERVICE_NAME, account)
@@ -28,6 +29,23 @@ pub fn load_google_drive_token(provider_id: &str) -> Result<Option<String>, Stri
 
 pub fn delete_google_drive_token(provider_id: &str) -> Result<(), String> {
     delete_password(&oauth_account(provider_id), "Google Drive credential")
+}
+
+pub fn store_atrishub_refresh_token(token: &str) -> Result<(), String> {
+    if token.trim().is_empty() {
+        return Err("Refusing to persist an empty AtrisHub refresh credential.".into());
+    }
+    entry(ATRIS_REFRESH_ACCOUNT)?
+        .set_password(token)
+        .map_err(|error| format!("Could not save AtrisHub session in the OS vault: {error}"))
+}
+
+pub fn load_atrishub_refresh_token() -> Result<Option<String>, String> {
+    load_password(ATRIS_REFRESH_ACCOUNT, "AtrisHub session")
+}
+
+pub fn delete_atrishub_refresh_token() -> Result<(), String> {
+    delete_password(ATRIS_REFRESH_ACCOUNT, "AtrisHub session")
 }
 
 pub fn workspace_key_reference(
