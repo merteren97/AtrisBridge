@@ -2,9 +2,9 @@
 
 ## Goal
 
-AtrisBridge is a local-first synchronization coordinator for source-code and engineering workspaces. The application owns safety policy, workspace state, conflict decisions, reviewable plans, recovery, credential routing, and optional encryption policy. Storage providers are transports rather than synchronization authority.
+AtrisBridge is a local-first synchronization coordinator for source-code and engineering workspaces. The application owns safety policy, workspace state, conflict decisions, reviewable plans, recovery, credential routing, optional encryption policy, and continuous reconciliation scheduling. Storage providers are transports rather than synchronization authority.
 
-## Current architecture — Phase 0 through Phase 7
+## Current architecture — Phase 0 through Phase 8
 
 ```text
 React / TypeScript UI
@@ -17,12 +17,20 @@ Tauri / Rust application core
         +-- safe local scanner + .atrisbridgeignore
         +-- BLAKE3 plaintext fingerprints
         +-- portable path / symlink guards
+        +-- continuous-watch runtime
+        |     +-- native notify watcher
+        |     +-- debounce / coalescing
+        |     +-- bounded provider polling
+        |     +-- one-cycle-per-workspace scheduler ownership
+        |     +-- guarded automatic policy
+        |
         +-- SQLite evidence journal (no secrets)
         |     +-- local/remote observations
         |     +-- synchronized baselines
         |     +-- backup/restore/two-way plans
         |     +-- conflicts + recovery metadata
         |     +-- non-secret encryption metadata
+        |     +-- durable watch settings + cycle state
         |
         +-- OS credential vault
         |     +-- Google Drive OAuth JSON
@@ -43,7 +51,25 @@ Tauri / Rust application core
                     +-- exact reviewed Drive file ID -> Trash
 ```
 
-The frontend never receives generic filesystem, shell, rclone, keyring, or Drive API capability. It receives only domain results and recovery keys when the user explicitly enables/exports encryption.
+The frontend never receives generic filesystem, shell, rclone, keyring, watcher, scheduler, or Drive API capability. It receives domain-specific commands/results and recovery keys only when the user explicitly enables/exports encryption.
+
+## Continuous reconciliation boundary
+
+Phase 8 introduces a native per-workspace filesystem watcher and a bounded provider reconciliation scheduler without making events authoritative.
+
+A filesystem notification only marks a workspace dirty. After a 1.8 second settling window the scheduler reruns the normal full scanner, refreshes provider evidence, and invokes the existing planner. Remote changes are detected by periodic provider reconciliation even when local files are quiet.
+
+Only one automatic cycle may own a workspace at once. Additional dirty signals are coalesced rather than spawning overlapping planners or transfers.
+
+`Auto-apply safe transfers` is a separate opt-in. When disabled, transfer-only plans are retained as review state. When enabled, only transfer plans with complete evidence, zero conflicts, zero blocked items, and zero deletion actions may execute automatically.
+
+Every deletion remains manual in Phase 8. Conflicts, uncertain evidence, scanner warnings, provider/encryption failures, or incomplete transfers fail closed.
+
+## Command ownership boundary
+
+Watch mode owns mutation for its workspace. The Rust IPC layer, not only the UI, rejects manual operations that could race the scheduler, including provider binding changes, sync-mode changes, encryption mutation/import, manual scans that rewrite evidence, backup/restore/two-way prepare/execute, recovery-copy restore, provider disconnect/forget affecting watched workspaces, and workspace removal.
+
+Read-only status/export queries remain available. Pause watch mode before returning to manual reviewed mutation.
 
 ## Secret ownership
 
@@ -63,11 +89,13 @@ Evidence is deliberately typed:
 
 Provider hashes are never compared to local BLAKE3 as if they were the same algorithm or representation.
 
+Watch state is also durable but remains scheduling metadata rather than evidence authority. It records enabled state, auto-apply preference, polling interval, dirty/cycle timestamps, latest state/message, failure count, and an evidence signature used to suppress repeated equivalent no-op/attention churn.
+
 ## Encryption boundary
 
-Phase 7 can route a workspace through a dedicated `.atrisbridge-crypt-v1` namespace under its managed Drive root.
+Encrypted workspaces route through a dedicated `.atrisbridge-crypt-v1` namespace under the managed Drive root.
 
-The first encrypted format protects regular-file contents while leaving filenames and directory structure visible. This keeps the current logical-path, collision, provider-ID, exact-ID Trash, and conflict model intact.
+The first encrypted format protects regular-file contents while leaving filenames and directory structure visible. This keeps the logical-path, collision, provider-ID, exact-ID Trash, and conflict model intact.
 
 A reserved encrypted sentinel verifies the recovery key. Missing/corrupt sentinel or ciphertext evidence is an error rather than an empty remote inventory. This prevents wrong-key/corruption states from creating false delete intent.
 
@@ -77,7 +105,7 @@ Encryption can be enabled/imported only before a synchronized baseline exists. A
 
 Backup, restore, and two-way planners compare current local, current remote, and last accepted baseline evidence. Modification time is never a winner rule.
 
-Phase 7 does not alter conflict semantics: encrypted provider evidence participates in the same baseline comparisons using its distinct checksum type. A file changing on both sides remains a conflict.
+Phase 8 does not add a second planner. Automatic cycles call the same evidence-first planners used by manual workflows and apply an additional conservative automatic-policy gate on top.
 
 ## Provider boundaries
 
@@ -89,26 +117,30 @@ rclone remains a constrained observation/byte transport. For encrypted workspace
 
 Reviewed remote Trash remains the only narrow direct Drive mutation outside rclone. For encrypted workspaces the reviewed ID is the underlying ciphertext Drive object ID, so path reuse cannot redirect the Trash request to another object.
 
-Permanent remote deletion is not implemented.
+Permanent remote deletion is not implemented, and Phase 8 never invokes Trash automatically.
 
 ## Recovery boundary
 
-Remote deletion cannot directly remove a local file. AtrisBridge first creates an app-data recovery copy, verifies BLAKE3 + size, persists applying state, repeats remote-absence checks, and only then removes the local file.
+Remote deletion cannot directly remove a local file. AtrisBridge first creates an app-data recovery copy, verifies BLAKE3 + size, persists applying state, repeats remote-absence checks, and only then removes the local file after explicit reviewed execution.
 
-Encryption recovery keys have a separate lifecycle: Phase 7 intentionally does not auto-delete them when workspace metadata is removed, because losing the last key could make remote ciphertext unrecoverable.
+Encryption recovery keys have a separate lifecycle and are intentionally not auto-deleted when workspace metadata is removed, because losing the last key could make remote ciphertext unrecoverable.
+
+## Startup order
+
+On startup AtrisBridge first runs interrupted backup/restore/two-way recovery. Only after recovery completes are durable Phase 8 watcher settings resumed. Background reconciliation must never race crash recovery from a previous process lifetime.
 
 ## Concurrency boundary
 
-The local filesystem and Google Drive cannot be made one distributed atomic transaction. Safety is built from fresh observations, reviewable immutable plan evidence, repeated targeted preflight, exact-ID remote Trash, staged/recoverable local mutations, postflight verification, and conditional SQLite completion.
+The local filesystem and Google Drive cannot be made one distributed atomic transaction. Safety is built from fresh observations, reviewable immutable plan evidence, repeated targeted preflight, exact-ID remote Trash, staged/recoverable local mutations, postflight verification, conditional SQLite completion, and per-workspace scheduler ownership.
 
-Provider-side races are surfaced as failures/conflicts requiring fresh review rather than hidden behind last-write-wins.
+Provider-side races are surfaced as failures/conflicts requiring fresh evidence rather than hidden behind last-write-wins.
 
 ## Trust boundaries
 
-- **React UI:** untrusted for direct filesystem/provider/secret operations.
-- **Rust core:** owns planner/executor, path safety, secret routing, encryption policy, and recovery.
+- **React UI:** untrusted for direct filesystem/provider/secret/watch operations.
+- **Rust core:** owns planner/executor, watcher/scheduler, command guards, path safety, secret routing, encryption policy, and recovery.
 - **OS credential vault:** persistent secret storage.
-- **SQLite:** non-secret durable evidence/history.
+- **SQLite:** non-secret durable evidence/history/watch settings.
 - **rclone sidecar:** pinned external transport constrained to dedicated operations.
 - **Google Drive:** fallible/concurrent remote store, never synchronization authority.
 - **app-data recovery area:** local recovery material verified before use.

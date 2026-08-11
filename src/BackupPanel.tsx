@@ -9,6 +9,7 @@ import {
   ShieldAlert,
   ShieldCheck,
 } from "lucide-react";
+import ContinuousSyncPanel from "./ContinuousSyncPanel";
 import {
   executeBackupPlan,
   getLatestBackupPlan,
@@ -17,7 +18,7 @@ import {
 } from "./lib/bridge";
 import RestorePanel from "./RestorePanel";
 import SyncPanel from "./SyncPanel";
-import type { BackupPlan, Workspace } from "./types";
+import type { BackupPlan, ContinuousSyncStatus, Workspace } from "./types";
 
 interface BackupPanelProps {
   workspace: Workspace;
@@ -66,10 +67,12 @@ export default function BackupPanel({
   const [plan, setPlan] = useState<BackupPlan | null>(null);
   const [busy, setBusy] = useState<"load" | "prepare" | "execute" | "mode" | null>(null);
   const [restoreBusy, setRestoreBusy] = useState(false);
+  const [continuous, setContinuous] = useState<ContinuousSyncStatus | null>(null);
+  const continuousEnabled = Boolean(continuous?.enabled);
 
   useEffect(() => {
     if (workspace.syncMode !== "two_way") void loadLatest();
-  }, [workspace.id, workspace.syncMode]);
+  }, [workspace.id, workspace.syncMode, continuousEnabled]);
 
   async function loadLatest() {
     try {
@@ -131,22 +134,37 @@ export default function BackupPanel({
     }
   }
 
+  const watchPanel = (
+    <ContinuousSyncPanel
+      workspaceId={workspace.id}
+      ready={ready}
+      onStatusChange={setContinuous}
+      onChanged={onChanged}
+      onError={onError}
+    />
+  );
+
   if (workspace.syncMode === "two_way") {
     return (
-      <SyncPanel
-        workspace={workspace}
-        ready={ready}
-        onChanged={onChanged}
-        onError={onError}
-      />
+      <>
+        {watchPanel}
+        <SyncPanel
+          key={`${workspace.id}:${continuousEnabled ? "watch" : "manual"}`}
+          workspace={workspace}
+          ready={ready && !continuousEnabled}
+          onChanged={onChanged}
+          onError={onError}
+        />
+      </>
     );
   }
 
-  const running = busy !== null || restoreBusy;
+  const running = busy !== null || restoreBusy || continuousEnabled;
   const visibleItems = plan?.items.slice(0, 8) ?? [];
 
   return (
     <>
+      {watchPanel}
       <section className="backup-plan-card">
         <div className="backup-plan-header">
           <div>
@@ -155,8 +173,9 @@ export default function BackupPanel({
               <strong>Safe backup plan</strong>
             </div>
             <p>
-              Prepare creates a fresh local + remote evidence snapshot. Uploads only run after a
-              separate review step.
+              {continuousEnabled
+                ? "Watch mode owns plan preparation while active. Pause it before using manual review controls."
+                : "Prepare creates a fresh local + remote evidence snapshot. Uploads only run after a separate review step."}
             </p>
           </div>
           <div className="backup-plan-actions">
@@ -206,7 +225,15 @@ export default function BackupPanel({
           </div>
         </div>
 
-        {!ready ? (
+        {continuousEnabled ? (
+          <div className="backup-plan-empty">
+            <ShieldCheck size={18} />
+            <div>
+              <strong>Watch mode owns this workspace</strong>
+              <span>Pause continuous watch to inspect or execute a plan manually.</span>
+            </div>
+          </div>
+        ) : !ready ? (
           <div className="backup-plan-empty">
             <ShieldAlert size={18} />
             <div>
@@ -291,9 +318,10 @@ export default function BackupPanel({
       </section>
 
       <RestorePanel
+        key={`${workspace.id}:${continuousEnabled ? "watch" : "manual"}`}
         workspace={workspace}
-        ready={ready}
-        disabled={busy !== null}
+        ready={ready && !continuousEnabled}
+        disabled={busy !== null || continuousEnabled}
         onBusyChange={setRestoreBusy}
         onChanged={onChanged}
         onError={onError}

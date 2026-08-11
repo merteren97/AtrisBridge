@@ -268,3 +268,27 @@ export interface SyncRecoveryEntry {
   createdAt: string;
   restoredAt: string | null;
 }
+
+export type ContinuousSyncState =
+  | "disabled"
+  | "idle"
+  | "debouncing"
+  | "running"
+  | "attention"
+  | "error";
+
+export interface ContinuousSyncStatus {
+  workspaceId: string;
+  enabled: boolean;
+  runtimeActive: boolean;
+  autoApplySafe: boolean;
+  remotePollSeconds: number;
+  state: ContinuousSyncState;
+  lastReason: string | null;
+  lastEventAt: string | null;
+  lastCycleStartedAt: string | null;
+  lastCycleCompletedAt: string | null;
+  lastSuccessAt: string | null;
+  lastMessage: string | null;
+  consecutiveFailures: number;
+}

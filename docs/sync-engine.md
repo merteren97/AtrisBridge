@@ -1,6 +1,6 @@
 # Sync Engine Design
 
-AtrisBridge synchronization is evidence-first and review-first. Phase 7 adds secure credential persistence and optional encrypted transport without changing the conflict authority introduced in Phase 6.
+AtrisBridge synchronization is evidence-first and review-first. Phase 8 adds continuous reconciliation and conservative scheduling without changing the conflict authority introduced in Phase 6 or the encryption evidence model introduced in Phase 7.
 
 ## Evidence model
 
@@ -22,7 +22,7 @@ The scanner validates the workspace root, applies built-in exclusions and `.atri
 
 Built-in exclusions include generated folders, Git/IDE metadata, `.env*`, common private-key/certificate formats, AtrisBridge `.part`/`.bak` recovery artifacts, and the reserved encryption sentinel name `.atrisbridge-key-check`.
 
-Unreadable entries are surfaced rather than interpreted as deletions.
+Unreadable entries and scan warnings are surfaced rather than interpreted as deletions. Phase 8 automatic cycles fail closed if their full scanner pass is not clean enough to provide trusted evidence.
 
 ## Durable journal
 
@@ -35,7 +35,8 @@ SQLite stores non-secret coordination state under OS application data. Relevant 
 - backup/restore/two-way plans and item evidence,
 - tombstones/conflicts,
 - recovery metadata,
-- non-secret workspace-encryption metadata.
+- non-secret workspace-encryption metadata,
+- continuous-watch configuration and latest cycle state.
 
 OAuth JSON and encryption recovery keys are never stored in SQLite.
 
@@ -56,7 +57,7 @@ Without an accepted baseline, overlapping local+remote paths are blocked rather 
 
 ## Encrypted provider evidence
 
-Phase 7 preserves the same decision matrix for encrypted workspaces. The only difference is the provider evidence representation.
+Encrypted workspaces preserve the same decision matrix. The provider evidence representation is different but conflict authority is not.
 
 A valid encrypted remote observation requires:
 
@@ -69,7 +70,7 @@ A valid encrypted remote observation requires:
 
 If crypt cannot map or authenticate the namespace, remote reconciliation aborts. A wrong key, missing sentinel, or corrupted ciphertext must never appear as a set of remote deletions.
 
-## Planning and execution order
+## Manual planning and execution order
 
 All transfer modes follow the same high-level sequence:
 
@@ -85,6 +86,54 @@ All transfer modes follow the same high-level sequence:
 
 Backup, restore, and two-way execution are mutually exclusive per workspace through backend mode/plan checks.
 
+## Phase 8 continuous reconciliation
+
+Phase 8 does **not** create a second synchronization engine. Watcher and polling signals only decide when to run the existing scanner/provider observation/planner stack.
+
+### Local trigger
+
+Native `notify` events are treated as dirty hints. Relevant bursts are coalesced behind a 1.8 second settling window, then the normal full scanner rebuilds local evidence.
+
+### Remote trigger
+
+Because local filesystem events cannot observe edits made by another machine, enabled workspaces periodically refresh provider evidence. The interval is bounded from 30 seconds through 60 minutes; the default is 60 seconds.
+
+### Workspace ownership
+
+Only one automatic cycle may run for a workspace at once. New dirty signals are queued/coalesced. While watch mode is active, manual mutating IPC commands that could rewrite filesystem/provider/journal state are rejected by the Rust command boundary.
+
+## Automatic policy gate
+
+`Auto-apply safe transfers` is a separate opt-in and defaults off.
+
+When it is off, a transfer-only plan is retained as a **review** outcome. This is distinct from destructive or ambiguous `attention` state, so enabling auto-apply later allows unchanged safe evidence to be evaluated again.
+
+When it is on:
+
+### Backup
+
+Automatic execution is allowed only if there is at least one upload and zero blocked paths.
+
+### Pull
+
+Automatic execution is allowed only if there is at least one download and zero blocked paths.
+
+### Two-Way
+
+Automatic execution is allowed only if there is at least one upload/download, zero conflicts, zero blocked paths, and **zero deletion actions**.
+
+Any deletion, conflict, blocked path, scanner warning, provider/encryption uncertainty, or failed transfer prevents automatic mutation.
+
+## Deletion behavior
+
+Phase 8 never automatically applies deletion actions.
+
+Manual local → remote deletion still requires local absence, matching baseline remote evidence, exact reviewed Drive file ID, Trash rather than permanent delete, and postflight checks.
+
+Manual remote → local deletion still requires repeated remote absence, unchanged baseline local evidence, a verified app-data recovery copy, applying state, final checks, and evidence-locked completion.
+
+For encrypted workspaces the exact reviewed remote ID is the ciphertext Drive object ID.
+
 ## Upload behavior
 
 Plain and encrypted uploads both require stable local BLAKE3 + size before/after transfer.
@@ -97,43 +146,20 @@ An ambiguous encrypted upload process failure is fail-closed because randomized 
 
 Downloads never target an existing project file directly. Data first lands in an AtrisBridge-owned staging path.
 
-Plain downloads require local staging size + MD5 to match reviewed Drive evidence. Encrypted downloads require the ciphertext ID/checksum to remain stable through targeted provider stat while rclone crypt authenticates/decrypts into the local stage; AtrisBridge then fingerprints the plaintext stage with BLAKE3 before recoverable apply.
+Plain downloads require local staging size + MD5 to match reviewed Drive evidence. Encrypted downloads require ciphertext ID/checksum to remain stable through targeted provider stat while rclone crypt authenticates/decrypts into the local stage; AtrisBridge then fingerprints the plaintext stage with BLAKE3 before recoverable apply.
 
 Existing local targets use `.bak` recovery until SQLite completion succeeds.
 
-## Deletion behavior
+## Continuous retry and churn control
 
-A missing observation is not automatically deletion authority.
+Repeated provider/runtime failures use bounded backoff. Successful cycles reset failure count.
 
-Local → remote deletion:
+The scheduler stores an evidence signature for equivalent outcomes. Repeated no-op or real attention states with unchanged evidence do not continuously generate fresh plans or provider churn. A safe transfer waiting only for user review is intentionally not suppressed as destructive attention, so policy changes can re-evaluate it.
 
-- local path must remain absent,
-- remote provider evidence must still equal baseline,
-- exact reviewed Drive file ID is moved to Trash,
-- path is checked again after Trash,
-- uncertain replacement/race state does not converge the baseline.
+## Startup recovery order
 
-Remote → local deletion:
-
-- remote path is repeatedly checked absent,
-- local BLAKE3 + size must still equal baseline,
-- an app-data recovery copy is written, fingerprinted, and flushed,
-- applying state is persisted,
-- local evidence/remote absence are rechecked,
-- only then can the local file be removed and deletion convergence committed.
-
-For encrypted workspaces, the exact reviewed remote ID is the ciphertext Drive object ID.
-
-## Encryption enable/import rules
-
-Optional client-side encryption is an explicit workspace mode layered below the normal sync modes. It can be attached only before any synchronized baseline exists and while no transfer plan is ready/running.
-
-Initial enablement requires an empty managed remote root. Importing an existing recovery key requires exact sentinel verification. Phase 7 does not automatically migrate established plaintext data to ciphertext or disable an encrypted workspace by rewriting remote content.
+On application startup interrupted backup/restore/two-way recovery runs first. Only after crash recovery completes are durable continuous-watch settings resumed. The watcher must never race an incomplete mutation from a previous process lifetime.
 
 ## Recovery-key lifecycle
 
-The recovery key lives in the OS credential vault and can be explicitly exported/imported. Workspace removal does not automatically delete that key in Phase 7; fail-safe retention avoids irrecoverable loss of existing remote ciphertext.
-
-## Phase 8 boundary
-
-Phase 7 still requires explicit planning/execution. Continuous filesystem watching, background scheduling, tray automation, and unattended synchronization remain Phase 8+ work and must preserve the same conflict/evidence rules rather than bypass them.
+The recovery key lives in the OS credential vault and can be explicitly exported/imported. Workspace removal does not automatically delete that key; fail-safe retention avoids irrecoverable loss of existing remote ciphertext.

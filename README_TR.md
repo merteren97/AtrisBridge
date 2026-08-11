@@ -2,7 +2,7 @@
 
 AtrisBridge; yazılım ve mühendislik projelerini farklı bilgisayarlar arasında daha güvenli, takip edilebilir ve taşınabilir hale getirmek için geliştirilen local-first bir masaüstü uygulamasıdır.
 
-> **Durum:** erken alpha (`0.1.0-alpha.6`). Yerel envanter, kalıcı SQLite state, restricted Google Drive transport, guarded backup/restore, conflict-aware two-way sync, işletim sistemi destekli credential persistence ve opsiyonel client-side içerik şifreleme uygulanmıştır.
+> **Durum:** erken alpha (`0.1.0-alpha.7`). Yerel envanter, kalıcı SQLite state, restricted Google Drive transport, guarded backup/restore, conflict-aware two-way sync, işletim sistemi destekli credential persistence, opsiyonel client-side içerik şifreleme ve korumacı continuous watch mode uygulanmıştır.
 
 [English README](README.md)
 
@@ -18,11 +18,12 @@ Aktif projeleri bilgisayarlar arasında taşımak çoğu zaman ZIP dosyaları, m
 - recoverable deletion propagation,
 - OS-native secure credential storage,
 - opsiyonel client-side içerik şifreleme,
+- filesystem event'lerini sync gerçeği değil yalnızca dirty signal olarak kullanan continuous reconciliation,
 - ilk provider olarak Google Drive kullanan provider-independent mimari.
 
 ## Şu anda çalışan özellikler
 
-Phase 0'dan Phase 7'ye kadar:
+Phase 0'dan Phase 8'e kadar:
 
 - Tauri 2 + React + TypeScript masaüstü uygulaması,
 - native workspace seçimi ve yönetimi,
@@ -43,30 +44,54 @@ Phase 0'dan Phase 7'ye kadar:
 - recovery copy'yi açık kullanıcı aksiyonuyla geri alma,
 - workspace bazında opsiyonel **client-side içerik şifreleme**,
 - encrypted workspace için `AB1-...` recovery key export/import,
+- workspace bazında native filesystem watcher + debounce/coalescing,
+- başka bilgisayardaki Drive değişiklikleri için bounded provider reconciliation polling,
+- yalnızca güvenli transfer planlarında opsiyonel automatic apply,
+- conflict, blocked path, scanner belirsizliği veya her türlü deletion olduğunda fail-closed manual review,
+- watch loop aktifken manual mutating IPC işlemlerinin backend tarafından engellenmesi,
 - plan ve execution öncesi fresh evidence,
 - frontend ve Rust doğrulaması için Linux CI.
 
-Workspace'i AtrisBridge'den kaldırmak proje dosyalarını silmez. Phase 7 ayrıca encryption recovery key'i workspace metadata ile birlikte OS credential vault'tan otomatik silmez; sessiz key silme encrypted remote veriyi geri döndürülemez hale getirebileceği için key fail-safe şekilde korunur.
+Workspace'i AtrisBridge'den kaldırmak proje dosyalarını silmez. Encryption recovery key'i de workspace metadata ile birlikte OS credential vault'tan otomatik silinmez; sessiz key silme encrypted remote veriyi geri döndürülemez hale getirebileceği için fail-safe şekilde korunur.
 
 ## Sync güvenlik modeli
 
-AtrisBridge otomatik last-write-wins yerine explicit review edilen planlar kullanır.
+AtrisBridge modification time'ı conflict otoritesi olarak kullanmaz ve arka planda last-write-wins çalıştırmaz.
 
 Two-Way modunda:
 
-- local değişti / remote aynı → reviewed upload,
-- local aynı / remote değişti → reviewed download,
+- local değişti / remote aynı → upload,
+- local aynı / remote değişti → download,
 - iki taraf da değişti → conflict,
 - local silindi / remote aynı → exact reviewed Drive object Trash'e taşınır,
 - remote silindi / local aynı → verified recovery copy sonrası reviewed local deletion,
 - delete/modify overlap → conflict,
 - shared baseline sonrasında iki taraf da yok → converged deletion acknowledgement.
 
-Modification time conflict çözüm otoritesi değildir. Execution öncesinde provider ve filesystem evidence yeniden okunur; SQLite completion exact plan evidence üzerinden conditional yapılır.
+Execution öncesinde provider ve filesystem evidence yeniden okunur; SQLite completion exact plan evidence üzerinden conditional yapılır.
 
-## Phase 7 secure credential storage
+## Phase 8 continuous watch mode
 
-Google Drive OAuth credential'ları artık bilerek session-only tutulmaz. AtrisBridge credential'ı işletim sisteminin secure credential facility'sinde saklar ve gerektiğinde Rust backend içine lazy-load eder.
+Continuous watch mode tekrar tekrar manuel scan yapma ihtiyacını azaltır fakat planner/executor güvenlik sınırını bypass etmez.
+
+- native filesystem event'leri yalnızca **dirty signal** kabul edilir,
+- local event burst'leri 1.8 saniyelik debounce/coalescing penceresinde toparlanır,
+- her cycle full scanner + fresh provider observation çalıştırır,
+- bounded Drive polling local dosyalar sessizken başka cihazlardan gelen remote değişiklikleri yakalar,
+- workspace başına aynı anda yalnızca bir automatic cycle çalışabilir,
+- `Auto-apply safe transfers` ayrı bir opt-in ayarıdır ve varsayılan olarak kapalıdır,
+- auto-apply kapalıyken güvenli upload/download planları destructive attention yerine **review** olarak bekler,
+- conflict, blocked path, eksik scanner evidence, encryption/provider belirsizliği ve her deletion işlemi fail-closed olur,
+- Phase 8 **hiçbir deletion action'ını otomatik uygulamaz**,
+- watch mode workspace'i sahiplenmişken manual mutating command'lar Rust IPC boundary tarafından reddedilir.
+
+Watch ayarları ve son cycle durumu SQLite'ta kalıcıdır. Uygulama yeniden açıldığında configured watcher'lar ancak interrupted-transfer recovery tamamlandıktan sonra resume edilir.
+
+Scheduler/state/retry ayrıntıları için [docs/continuous-watch.md](docs/continuous-watch.md) belgesine bakabilirsiniz.
+
+## Secure credential storage
+
+Google Drive OAuth credential'ları işletim sisteminin secure credential facility'sinde tutulur ve gerektiğinde Rust backend tarafından lazy-load edilir.
 
 Credential şu yerlere yazılmaz:
 
@@ -78,9 +103,9 @@ Credential şu yerlere yazılmaz:
 
 Saved credential kaldırılırsa cloud işlemlerine devam etmek için Google OAuth bağlantısını yeniden kurmak gerekir. Provider'ı **Forget** etmek AtrisBridge provider metadata'sını da kaldırır; Drive verisini silmez.
 
-## Phase 7 opsiyonel client-side encryption
+## Opsiyonel client-side encryption
 
-Client-side encryption workspace bazında opt-in'dir. Yalnızca henüz accepted synchronized baseline oluşmamışken etkinleştirilebilir ve managed remote root boş olmalıdır. Phase 7 plaintext veriyi yerinde otomatik olarak ciphertext'e migrate etmez.
+Client-side encryption workspace bazında opt-in'dir. Yalnızca henüz accepted synchronized baseline oluşmamışken etkinleştirilebilir ve managed remote root boş olmalıdır. AtrisBridge plaintext veriyi yerinde otomatik olarak ciphertext'e migrate etmez.
 
 Encryption açıkken:
 
@@ -107,9 +132,10 @@ Encrypted namespace veya key-verification sentinel kaybolur/bozulursa AtrisBridg
 5. **Phase 5 — güvenli pull ve restore** ✅
 6. **Phase 6 — conflict-aware two-way sync** ✅
 7. **Phase 7 — persistent secure credential storage + opsiyonel client-side content encryption** ✅
-8. **Phase 8+ — continuous watch mode, tray, ek provider'lar ve release pipeline**
+8. **Phase 8 — continuous watch mode + korumacı scheduler** ✅
+9. **Phase 9+ — tray/progress/notifications, ek provider'lar ve cross-platform release pipeline**
 
-Detaylar için [docs/architecture.md](docs/architecture.md), [docs/sync-engine.md](docs/sync-engine.md), [docs/security.md](docs/security.md), [docs/rclone-transport.md](docs/rclone-transport.md), [docs/backup-engine.md](docs/backup-engine.md) ve [docs/restore-engine.md](docs/restore-engine.md) belgelerine bakabilirsiniz.
+Detaylar için [docs/architecture.md](docs/architecture.md), [docs/sync-engine.md](docs/sync-engine.md), [docs/security.md](docs/security.md), [docs/continuous-watch.md](docs/continuous-watch.md), [docs/rclone-transport.md](docs/rclone-transport.md), [docs/backup-engine.md](docs/backup-engine.md) ve [docs/restore-engine.md](docs/restore-engine.md) belgelerine bakabilirsiniz.
 
 ## Geliştirme
 
