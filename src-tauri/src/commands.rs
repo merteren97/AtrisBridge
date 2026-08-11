@@ -45,7 +45,12 @@ pub fn add_workspace(app: AppHandle, name: String, path: String) -> Result<Works
 
     let workspace = Workspace {
         id: Uuid::new_v4().to_string(),
-        name: if trimmed_name.is_empty() { fallback_name } else { trimmed_name }.to_owned(),
+        name: if trimmed_name.is_empty() {
+            fallback_name
+        } else {
+            trimmed_name
+        }
+        .to_owned(),
         local_path: requested.to_string_lossy().to_string(),
         sync_mode: SyncMode::Backup,
         created_at: Utc::now().to_rfc3339(),

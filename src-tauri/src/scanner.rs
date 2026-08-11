@@ -53,7 +53,9 @@ pub fn scan(workspace_id: &str, root: &Path) -> Result<ScanReport, String> {
     };
 
     visit_directory(root, root, matcher.as_ref(), &mut state)?;
-    state.files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    state
+        .files
+        .sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
 
     let preview_truncated = state.file_count as usize > PREVIEW_LIMIT;
     state.files.truncate(PREVIEW_LIMIT);
@@ -111,7 +113,10 @@ fn visit_directory(
         let file_type = match entry.file_type() {
             Ok(file_type) => file_type,
             Err(error) => {
-                push_warning(state, format!("Could not inspect {}: {error}", path.display()));
+                push_warning(
+                    state,
+                    format!("Could not inspect {}: {error}", path.display()),
+                );
                 continue;
             }
         };
@@ -144,7 +149,10 @@ fn visit_directory(
         let metadata = match entry.metadata() {
             Ok(metadata) => metadata,
             Err(error) => {
-                push_warning(state, format!("Could not read metadata for {}: {error}", path.display()));
+                push_warning(
+                    state,
+                    format!("Could not read metadata for {}: {error}", path.display()),
+                );
                 continue;
             }
         };
@@ -195,7 +203,11 @@ fn hash_file(path: &Path) -> Result<String, String> {
 
 fn is_custom_ignored(path: &Path, is_dir: bool, matcher: Option<&Gitignore>) -> bool {
     matcher
-        .map(|matcher| matcher.matched_path_or_any_parents(path, is_dir).is_ignore())
+        .map(|matcher| {
+            matcher
+                .matched_path_or_any_parents(path, is_dir)
+                .is_ignore()
+        })
         .unwrap_or(false)
 }
 
@@ -203,7 +215,11 @@ fn is_builtin_ignored(relative: &Path, is_dir: bool) -> bool {
     if relative
         .components()
         .filter_map(|component| component.as_os_str().to_str())
-        .any(|component| BUILTIN_DIRECTORY_IGNORES.iter().any(|ignored| component.eq_ignore_ascii_case(ignored)))
+        .any(|component| {
+            BUILTIN_DIRECTORY_IGNORES
+                .iter()
+                .any(|ignored| component.eq_ignore_ascii_case(ignored))
+        })
     {
         return true;
     }
@@ -222,7 +238,11 @@ fn is_builtin_ignored(relative: &Path, is_dir: bool) -> bool {
     relative
         .extension()
         .and_then(|value| value.to_str())
-        .map(|extension| BUILTIN_SECRET_EXTENSIONS.iter().any(|ignored| extension.eq_ignore_ascii_case(ignored)))
+        .map(|extension| {
+            BUILTIN_SECRET_EXTENSIONS
+                .iter()
+                .any(|ignored| extension.eq_ignore_ascii_case(ignored))
+        })
         .unwrap_or(false)
 }
 
@@ -277,7 +297,10 @@ mod tests {
 
     #[test]
     fn blocks_known_secret_extensions() {
-        assert!(is_builtin_ignored(Path::new("certificates/client.pfx"), false));
+        assert!(is_builtin_ignored(
+            Path::new("certificates/client.pfx"),
+            false
+        ));
         assert!(is_builtin_ignored(Path::new(".env.local"), false));
         assert!(!is_builtin_ignored(Path::new("src/main.rs"), false));
     }
