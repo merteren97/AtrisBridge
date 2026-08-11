@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     path::{Path, PathBuf},
     process::{Command, Output},
 };
@@ -7,7 +8,10 @@ use serde::Deserialize;
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
-use crate::models::{RcloneStatus, RemoteFileObservation};
+use crate::{
+    models::{RcloneStatus, RemoteFileObservation},
+    scanner,
+};
 
 pub const REQUIRED_RCLONE_VERSION: &str = "1.74.4";
 const DRIVE_SCOPE: &str = "drive.file";
@@ -19,6 +23,9 @@ const RCLONE_ENV_KEYS: &[&str] = &[
     "RCLONE_DRIVE_CLIENT_ID",
     "RCLONE_DRIVE_CLIENT_SECRET",
     "RCLONE_DRIVE_SCOPE",
+    "RCLONE_DRIVE_SKIP_GDOCS",
+    "RCLONE_DRIVE_USE_TRASH",
+    "RCLONE_DRIVE_KEEP_REVISION_FOREVER",
 ];
 
 #[derive(Debug, Clone)]
@@ -108,10 +115,15 @@ pub fn list_google_drive_files(
 ) -> Result<Vec<RemoteFileObservation>, String> {
     let runtime = locate_runtime(app)?;
     let normalized_path = normalize_remote_path(remote_path)?;
+    let target = if normalized_path.is_empty() {
+        ":drive:".to_string()
+    } else {
+        format!(":drive:{normalized_path}")
+    };
     let output = drive_command(&runtime, token)
         .args([
             "lsjson",
-            ":drive:",
+            target.as_str(),
             "--recursive",
             "--files-only",
             "--hash",
@@ -122,56 +134,195 @@ pub fn list_google_drive_files(
         ])
         .output()
         .map_err(|error| format!("Could not read Google Drive inventory: {error}"))?;
+
+    if output.status.code() == Some(3) {
+        return Ok(Vec::new());
+    }
     ensure_success("Google Drive inventory", &output)?;
 
     let items: Vec<RcloneListItem> = serde_json::from_slice(&output.stdout)
         .map_err(|error| format!("Google Drive inventory response was invalid: {error}"))?;
-    let prefix = if normalized_path.is_empty() {
-        None
-    } else {
-        Some(format!("{normalized_path}/"))
+    let mut seen_paths = HashSet::new();
+    let mut observations = Vec::with_capacity(items.len());
+    for item in items {
+        if item.path.is_empty() {
+            continue;
+        }
+        let relative_path = normalize_remote_path(&item.path)?;
+        if !seen_paths.insert(relative_path.clone()) {
+            return Err(format!(
+                "Google Drive returned duplicate objects for {relative_path}. AtrisBridge blocks backup until duplicate Drive names are resolved."
+            ));
+        }
+        observations.push(observation_from_item(item, relative_path)?);
+    }
+    Ok(observations)
+}
+
+pub fn stat_google_drive_file(
+    app: &AppHandle,
+    token: &str,
+    remote_file_path: &str,
+    relative_path: &str,
+) -> Result<RemoteFileObservation, String> {
+    try_stat_google_drive_file(app, token, remote_file_path, relative_path)?
+        .ok_or_else(|| "Google Drive file was not found during safety verification.".to_string())
+}
+
+pub fn try_stat_google_drive_file(
+    app: &AppHandle,
+    token: &str,
+    remote_file_path: &str,
+    relative_path: &str,
+) -> Result<Option<RemoteFileObservation>, String> {
+    let runtime = locate_runtime(app)?;
+    let normalized = normalize_remote_path(remote_file_path)?;
+    if normalized.is_empty() {
+        return Err("Remote file path cannot be empty.".into());
+    }
+    let target = format!(":drive:{normalized}");
+    let output = drive_command(&runtime, token)
+        .args([
+            "lsjson",
+            target.as_str(),
+            "--stat",
+            "--hash",
+            "--hash-type",
+            "MD5",
+            "--no-mimetype",
+        ])
+        .output()
+        .map_err(|error| format!("Could not inspect Google Drive file: {error}"))?;
+
+    if matches!(output.status.code(), Some(3 | 4)) {
+        return Ok(None);
+    }
+    ensure_success("Google Drive file preflight", &output)?;
+    let item: RcloneListItem = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("Google Drive file response was invalid: {error}"))?;
+    observation_from_item(item, relative_path.to_string()).map(Some)
+}
+
+pub fn local_file_md5(app: &AppHandle, local_path: &Path) -> Result<String, String> {
+    if !local_path.is_file() {
+        return Err("Upload candidate is no longer a regular file.".into());
+    }
+    let runtime = locate_runtime(app)?;
+    let output = clean_command(&runtime.executable)
+        .arg("--config=")
+        .args(["hashsum", "MD5"])
+        .arg(local_path)
+        .output()
+        .map_err(|error| format!("Could not calculate local MD5 evidence: {error}"))?;
+    ensure_success("Local MD5 calculation", &output)?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let hash = stdout
+        .lines()
+        .find_map(|line| line.split_whitespace().next())
+        .ok_or_else(|| "rclone did not return a local MD5 hash.".to_string())?
+        .to_ascii_lowercase();
+    if hash.len() != 32 || !hash.chars().all(|character| character.is_ascii_hexdigit()) {
+        return Err("rclone returned an invalid local MD5 hash.".into());
+    }
+    Ok(hash)
+}
+
+pub fn upload_google_drive_file(
+    app: &AppHandle,
+    token: &str,
+    local_path: &Path,
+    remote_file_path: &str,
+    create_only: bool,
+) -> Result<RemoteFileObservation, String> {
+    let (before_size, before_blake3) = scanner::fingerprint_file(local_path)?;
+    let local_md5 = local_file_md5(app, local_path)?;
+    let (after_hash_size, after_hash_blake3) = scanner::fingerprint_file(local_path)?;
+    if before_size != after_hash_size || before_blake3 != after_hash_blake3 {
+        return Err(
+            "Local file changed while upload evidence was being prepared. Nothing was sent.".into(),
+        );
+    }
+
+    let normalized = normalize_remote_path(remote_file_path)?;
+    if normalized.is_empty() {
+        return Err("Remote file path cannot be empty.".into());
+    }
+
+    if create_only && try_stat_google_drive_file(app, token, &normalized, &normalized)?.is_some() {
+        return Err(
+            "Remote path appeared immediately before upload. AtrisBridge blocked the create operation."
+                .into(),
+        );
+    }
+
+    let runtime = locate_runtime(app)?;
+    let destination = format!(":drive:{normalized}");
+    let mut command = drive_command(&runtime, token);
+    command
+        .arg("copyto")
+        .arg(local_path)
+        .arg(destination)
+        .args(["--checksum", "--retries", "1", "--stats", "0"]);
+    if create_only {
+        command.arg("--immutable");
+    }
+
+    let output = command
+        .output()
+        .map_err(|error| format!("Could not start Google Drive upload: {error}"))?;
+    let transfer_result = ensure_success("Google Drive upload", &output);
+
+    let (after_size, after_blake3) = scanner::fingerprint_file(local_path)?;
+    if before_size != after_size || before_blake3 != after_blake3 {
+        return Err(
+            "Local file changed while it was being uploaded. Remote content was not accepted as a synchronized baseline."
+                .into(),
+        );
+    }
+
+    let remote = try_stat_google_drive_file(app, token, &normalized, &normalized)?;
+    let Some(remote) = remote else {
+        return match transfer_result {
+            Ok(()) => {
+                Err("Upload returned success but the remote file could not be verified.".into())
+            }
+            Err(error) => Err(error),
+        };
     };
 
-    items
-        .into_iter()
-        .filter_map(|item| {
-            let relative_path = match &prefix {
-                Some(prefix) => item.path.strip_prefix(prefix)?.to_string(),
-                None => item.path.clone(),
-            };
-            if relative_path.is_empty() {
-                return None;
-            }
+    let remote_md5 = match (
+        remote.checksum_type.as_deref(),
+        remote.checksum.as_deref(),
+    ) {
+        (Some(kind), Some(hash)) if kind.eq_ignore_ascii_case("MD5") => hash,
+        _ => {
+            return Err(
+                "Google Drive did not return MD5 evidence for the uploaded file; baseline was not accepted."
+                    .into(),
+            )
+        }
+    };
+    if remote.size != before_size || !remote_md5.eq_ignore_ascii_case(&local_md5) {
+        return Err(
+            "Google Drive content evidence did not match the local file after upload; baseline was not accepted."
+                .into(),
+        );
+    }
 
-            let (checksum_type, checksum) = item
-                .hashes
-                .iter()
-                .find_map(|(kind, value)| {
-                    value.as_str().map(|hash| (kind.clone(), hash.to_string()))
-                })
-                .map(|(kind, hash)| (Some(kind), Some(hash)))
-                .unwrap_or((None, None));
+    // A transport error can occur after Drive has accepted the object. If exact local
+    // size and MD5 are visible remotely, accepting this observation is safer than
+    // blindly retrying and risking a duplicate Google Drive object.
+    Ok(remote)
+}
 
-            let size = match u64::try_from(item.size) {
-                Ok(size) => size,
-                Err(_) => {
-                    return Some(Err(format!(
-                        "Remote file {} reported an invalid size.",
-                        item.path
-                    )))
-                }
-            };
-
-            Some(Ok(RemoteFileObservation {
-                relative_path,
-                remote_id: item.id,
-                size,
-                modified_at: item.modified_at,
-                checksum_type,
-                checksum,
-            }))
-        })
-        .collect()
+pub fn join_remote_path(root: &str, relative_path: &str) -> Result<String, String> {
+    let root = normalize_remote_path(root)?;
+    let relative = normalize_remote_path(relative_path)?;
+    if root.is_empty() || relative.is_empty() {
+        return Err("Remote backup path requires both a workspace folder and file path.".into());
+    }
+    normalize_remote_path(&format!("{root}/{relative}"))
 }
 
 pub fn normalize_remote_path(value: &str) -> Result<String, String> {
@@ -272,6 +423,33 @@ fn clean_command(executable: &Path) -> Command {
     command
 }
 
+fn observation_from_item(
+    item: RcloneListItem,
+    relative_path: String,
+) -> Result<RemoteFileObservation, String> {
+    let (checksum_type, checksum) = item
+        .hashes
+        .iter()
+        .find_map(|(kind, value)| {
+            value
+                .as_str()
+                .map(|hash| (kind.clone(), hash.to_ascii_lowercase()))
+        })
+        .map(|(kind, hash)| (Some(kind), Some(hash)))
+        .unwrap_or((None, None));
+    let size = u64::try_from(item.size)
+        .map_err(|_| format!("Remote file {} reported an invalid size.", item.path))?;
+
+    Ok(RemoteFileObservation {
+        relative_path,
+        remote_id: item.id,
+        size,
+        modified_at: item.modified_at,
+        checksum_type,
+        checksum,
+    })
+}
+
 fn ensure_success(action: &str, output: &Output) -> Result<(), String> {
     if output.status.success() {
         return Ok(());
@@ -345,6 +523,15 @@ mod tests {
             "AtrisBridge/Project"
         );
         assert!(normalize_remote_path("AtrisBridge/../Other").is_err());
+    }
+
+    #[test]
+    fn joins_workspace_and_file_paths_safely() {
+        assert_eq!(
+            join_remote_path("AtrisBridge/Project", "src/main.rs").expect("path"),
+            "AtrisBridge/Project/src/main.rs"
+        );
+        assert!(join_remote_path("AtrisBridge/Project", "src/../secret.txt").is_err());
     }
 
     #[test]

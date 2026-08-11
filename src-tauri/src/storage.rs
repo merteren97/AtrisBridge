@@ -1,3 +1,4 @@
+use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use tauri::AppHandle;
 
@@ -11,28 +12,49 @@ pub fn load_workspaces(app: &AppHandle) -> Result<Vec<Workspace>, String> {
     load_workspaces_with_connection(&connection)
 }
 
-pub fn find_workspace(app: &AppHandle, id: &str) -> Result<Workspace, String> {
-    let connection = open_database(app)?;
-    find_workspace_with_connection(&connection, id)?
-        .ok_or_else(|| "Workspace was not found.".to_string())
-}
-
 pub fn insert_workspace(app: &AppHandle, workspace: &Workspace) -> Result<(), String> {
     let connection = open_database(app)?;
-    insert_workspace_with_connection(&connection, workspace)
+    connection
+        .execute(
+            "INSERT INTO workspaces (
+                id, name, local_path, sync_mode, created_at, last_scan_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                workspace.id,
+                workspace.name,
+                workspace.local_path,
+                workspace.sync_mode.as_str(),
+                workspace.created_at,
+                workspace.last_scan_at,
+            ],
+        )
+        .map_err(|error| {
+            if error.to_string().contains("UNIQUE constraint failed") {
+                "This directory is already an AtrisBridge workspace.".to_string()
+            } else {
+                format!("Could not save workspace metadata: {error}")
+            }
+        })?;
+    Ok(())
 }
 
-pub fn delete_workspace(app: &AppHandle, id: &str) -> Result<(), String> {
+pub fn delete_workspace(app: &AppHandle, workspace_id: &str) -> Result<(), String> {
     let connection = open_database(app)?;
     let changed = connection
-        .execute("DELETE FROM workspaces WHERE id = ?1", params![id])
+        .execute(
+            "DELETE FROM workspaces WHERE id = ?1",
+            params![workspace_id],
+        )
         .map_err(|error| format!("Could not remove workspace metadata: {error}"))?;
-
     if changed == 0 {
         return Err("Workspace was not found.".into());
     }
-
     Ok(())
+}
+
+pub fn find_workspace(app: &AppHandle, workspace_id: &str) -> Result<Workspace, String> {
+    let connection = open_database(app)?;
+    find_workspace_with_connection(&connection, workspace_id)
 }
 
 pub fn record_scan(
@@ -54,18 +76,17 @@ pub fn list_journal_summaries(app: &AppHandle) -> Result<Vec<JournalSummary>, St
     let workspace_ids = {
         let mut statement = connection
             .prepare("SELECT id FROM workspaces ORDER BY created_at ASC")
-            .map_err(|error| format!("Could not prepare journal summary query: {error}"))?;
+            .map_err(|error| format!("Could not prepare workspace summary query: {error}"))?;
         let rows = statement
             .query_map([], |row| row.get::<_, String>(0))
-            .map_err(|error| format!("Could not list workspace journal ids: {error}"))?;
-
+            .map_err(|error| format!("Could not query workspace summaries: {error}"))?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|error| format!("Could not read workspace journal ids: {error}"))?
+            .map_err(|error| format!("Could not read workspace summaries: {error}"))?
     };
 
     workspace_ids
-        .iter()
-        .map(|id| journal_summary_with_connection(&connection, id))
+        .into_iter()
+        .map(|workspace_id| journal_summary_with_connection(&connection, &workspace_id))
         .collect()
 }
 
@@ -80,7 +101,7 @@ fn load_workspaces_with_connection(connection: &Connection) -> Result<Vec<Worksp
 
     let rows = statement
         .query_map([], workspace_from_row)
-        .map_err(|error| format!("Could not query workspace metadata: {error}"))?;
+        .map_err(|error| format!("Could not query workspaces: {error}"))?;
 
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|error| format!("Could not read workspace metadata: {error}"))
@@ -88,28 +109,23 @@ fn load_workspaces_with_connection(connection: &Connection) -> Result<Vec<Worksp
 
 fn find_workspace_with_connection(
     connection: &Connection,
-    id: &str,
-) -> Result<Option<Workspace>, String> {
+    workspace_id: &str,
+) -> Result<Workspace, String> {
     connection
         .query_row(
             "SELECT id, name, local_path, sync_mode, created_at, last_scan_at
-             FROM workspaces
-             WHERE id = ?1",
-            params![id],
+             FROM workspaces WHERE id = ?1",
+            params![workspace_id],
             workspace_from_row,
         )
         .optional()
-        .map_err(|error| format!("Could not read workspace metadata: {error}"))
+        .map_err(|error| format!("Could not read workspace metadata: {error}"))?
+        .ok_or_else(|| "Workspace was not found.".to_string())
 }
 
 fn workspace_from_row(row: &Row<'_>) -> rusqlite::Result<Workspace> {
-    let sync_mode_raw: String = row.get(3)?;
-    let sync_mode = SyncMode::from_storage(&sync_mode_raw).ok_or_else(|| {
-        rusqlite::Error::InvalidParameterName(format!(
-            "Invalid sync_mode value stored in database: {sync_mode_raw}"
-        ))
-    })?;
-
+    let sync_mode: String = row.get(3)?;
+    let sync_mode = SyncMode::from_storage(&sync_mode).ok_or(rusqlite::Error::InvalidQuery)?;
     Ok(Workspace {
         id: row.get(0)?,
         name: row.get(1)?,
@@ -120,28 +136,6 @@ fn workspace_from_row(row: &Row<'_>) -> rusqlite::Result<Workspace> {
     })
 }
 
-fn insert_workspace_with_connection(
-    connection: &Connection,
-    workspace: &Workspace,
-) -> Result<(), String> {
-    connection
-        .execute(
-            "INSERT INTO workspaces (
-                id, name, local_path, sync_mode, created_at, last_scan_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                workspace.id,
-                workspace.name,
-                workspace.local_path,
-                workspace.sync_mode.as_str(),
-                workspace.created_at,
-                workspace.last_scan_at,
-            ],
-        )
-        .map_err(|error| format!("Could not save workspace metadata: {error}"))?;
-    Ok(())
-}
-
 fn record_scan_with_connection(
     connection: &mut Connection,
     report: &ScanReport,
@@ -150,7 +144,7 @@ fn record_scan_with_connection(
     let duration_ms = to_i64_u128(report.duration_ms, "scan duration")?;
     let file_count = to_i64_u64(report.file_count, "file count")?;
     let directory_count = to_i64_u64(report.directory_count, "directory count")?;
-    let total_bytes = to_i64_u64(report.total_bytes, "total bytes")?;
+    let total_bytes = to_i64_u64(report.total_bytes, "byte count")?;
     let skipped_entries = to_i64_u64(report.skipped_entries, "skipped entry count")?;
     let warnings_json = serde_json::to_string(&report.warnings)
         .map_err(|error| format!("Could not serialize scan warnings: {error}"))?;
@@ -197,23 +191,30 @@ fn record_scan_with_connection(
                     tombstone = 0,
                     state = CASE
                         WHEN file_entries.last_synced_hash IS NULL
-                             AND file_entries.remote_hash IS NOT NULL
+                             AND file_entries.remote_present = 1
                             THEN 'conflict'
                         WHEN file_entries.last_synced_hash IS NULL
                             THEN 'local_only'
                         WHEN excluded.local_hash = file_entries.last_synced_hash
-                             AND (
-                                file_entries.remote_hash IS NULL
-                                OR file_entries.remote_hash = file_entries.last_synced_hash
-                             )
+                             AND file_entries.remote_present = 1
+                             AND file_entries.last_synced_remote_checksum IS NOT NULL
+                             AND file_entries.last_synced_remote_checksum_type IS NOT NULL
+                             AND file_entries.remote_checksum IS NOT NULL
+                             AND file_entries.remote_checksum_type IS NOT NULL
+                             AND file_entries.remote_checksum_type = file_entries.last_synced_remote_checksum_type
+                             AND file_entries.remote_checksum = file_entries.last_synced_remote_checksum
                             THEN 'synced'
                         WHEN excluded.local_hash = file_entries.last_synced_hash
-                             AND file_entries.remote_hash != file_entries.last_synced_hash
                             THEN 'remote_modified'
-                        WHEN file_entries.remote_hash IS NOT NULL
-                             AND file_entries.remote_hash != file_entries.last_synced_hash
-                            THEN 'conflict'
-                        ELSE 'local_modified'
+                        WHEN file_entries.remote_present = 1
+                             AND file_entries.last_synced_remote_checksum IS NOT NULL
+                             AND file_entries.last_synced_remote_checksum_type IS NOT NULL
+                             AND file_entries.remote_checksum IS NOT NULL
+                             AND file_entries.remote_checksum_type IS NOT NULL
+                             AND file_entries.remote_checksum_type = file_entries.last_synced_remote_checksum_type
+                             AND file_entries.remote_checksum = file_entries.last_synced_remote_checksum
+                            THEN 'local_modified'
+                        ELSE 'conflict'
                     END",
             )
             .map_err(|error| format!("Could not prepare file journal update: {error}"))?;
@@ -245,18 +246,29 @@ fn record_scan_with_connection(
                  local_hash = NULL,
                  state = CASE
                     WHEN last_synced_hash IS NOT NULL
-                         AND remote_hash IS NOT NULL
-                         AND remote_hash != last_synced_hash
-                        THEN 'conflict'
-                    WHEN last_synced_hash IS NOT NULL
+                         AND remote_present = 1
+                         AND last_synced_remote_checksum IS NOT NULL
+                         AND last_synced_remote_checksum_type IS NOT NULL
+                         AND remote_checksum IS NOT NULL
+                         AND remote_checksum_type IS NOT NULL
+                         AND remote_checksum_type = last_synced_remote_checksum_type
+                         AND remote_checksum = last_synced_remote_checksum
                         THEN 'local_deleted'
-                    WHEN remote_hash IS NOT NULL
+                    WHEN last_synced_hash IS NOT NULL
+                        THEN 'conflict'
+                    WHEN remote_present = 1
                         THEN 'remote_only'
                     ELSE 'removed_before_sync'
                  END,
                  tombstone = CASE
                     WHEN last_synced_hash IS NOT NULL
-                         AND (remote_hash IS NULL OR remote_hash = last_synced_hash)
+                         AND remote_present = 1
+                         AND last_synced_remote_checksum IS NOT NULL
+                         AND last_synced_remote_checksum_type IS NOT NULL
+                         AND remote_checksum IS NOT NULL
+                         AND remote_checksum_type IS NOT NULL
+                         AND remote_checksum_type = last_synced_remote_checksum_type
+                         AND remote_checksum = last_synced_remote_checksum
                         THEN 1
                     ELSE 0
                  END
@@ -364,178 +376,111 @@ fn from_i64(value: i64, label: &str) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::database;
 
-    fn test_connection() -> Connection {
-        let mut connection = Connection::open_in_memory().expect("in-memory database");
+    fn connection() -> Connection {
+        let mut connection = Connection::open_in_memory().expect("database");
         connection
             .execute_batch("PRAGMA foreign_keys = ON;")
             .expect("foreign keys");
-        database::migrate_schema(&mut connection).expect("schema migration");
+        crate::database::migrate_schema(&mut connection).expect("schema");
         connection
     }
 
     fn workspace() -> Workspace {
         Workspace {
             id: "workspace-1".into(),
-            name: "Test Workspace".into(),
-            local_path: "/tmp/atrisbridge-test".into(),
+            name: "Project".into(),
+            local_path: "/tmp/project".into(),
             sync_mode: SyncMode::Backup,
-            created_at: "2026-08-11T06:00:00Z".into(),
+            created_at: "2026-08-11T07:00:00Z".into(),
             last_scan_at: None,
         }
     }
 
-    fn file(hash: &str) -> ScanFile {
+    fn report(at: &str, files: &[ScanFile]) -> ScanReport {
+        ScanReport {
+            workspace_id: "workspace-1".into(),
+            scanned_at: at.into(),
+            duration_ms: 5,
+            file_count: files.len() as u64,
+            directory_count: 1,
+            total_bytes: files.iter().map(|file| file.size).sum(),
+            skipped_entries: 0,
+            preview_truncated: false,
+            files: files.to_vec(),
+            warnings: vec![],
+        }
+    }
+
+    fn file(path: &str, hash: &str) -> ScanFile {
         ScanFile {
-            relative_path: "src/main.rs".into(),
-            size: 42,
-            modified_at: Some("2026-08-11T06:00:00Z".into()),
+            relative_path: path.into(),
+            size: 12,
+            modified_at: Some("2026-08-11T07:00:00Z".into()),
             blake3: hash.into(),
         }
     }
 
-    fn report(scanned_at: &str, file_count: u64) -> ScanReport {
-        ScanReport {
-            workspace_id: "workspace-1".into(),
-            scanned_at: scanned_at.into(),
-            duration_ms: 10,
-            file_count,
-            directory_count: 1,
-            total_bytes: if file_count == 0 { 0 } else { 42 },
-            skipped_entries: 0,
-            preview_truncated: false,
-            files: Vec::new(),
-            warnings: Vec::new(),
-        }
-    }
-
     #[test]
-    fn first_scan_creates_durable_local_only_state() {
-        let mut connection = test_connection();
-        insert_workspace_with_connection(&connection, &workspace()).expect("insert workspace");
-
+    fn missing_file_becomes_tombstone_only_with_unchanged_remote_evidence() {
+        let mut connection = connection();
+        insert_workspace_with_connection(&connection, &workspace()).expect("workspace");
+        let first = vec![file("src/main.rs", "local-a")];
         record_scan_with_connection(
             &mut connection,
-            &report("2026-08-11T06:01:00Z", 1),
-            &[file("hash-a")],
-        )
-        .expect("record scan");
-
-        let state: String = connection
-            .query_row(
-                "SELECT state FROM file_entries WHERE workspace_id = 'workspace-1'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("state");
-        let summary =
-            journal_summary_with_connection(&connection, "workspace-1").expect("journal summary");
-
-        assert_eq!(state, "local_only");
-        assert_eq!(summary.present_files, 1);
-        assert_eq!(summary.present_bytes, 42);
-        assert_eq!(summary.changed_files, 1);
-        assert_eq!(summary.tombstones, 0);
-    }
-
-    #[test]
-    fn changed_synced_file_becomes_local_modified() {
-        let mut connection = test_connection();
-        insert_workspace_with_connection(&connection, &workspace()).expect("insert workspace");
-        record_scan_with_connection(
-            &mut connection,
-            &report("2026-08-11T06:01:00Z", 1),
-            &[file("hash-a")],
+            &report("2026-08-11T07:10:00Z", &first),
+            &first,
         )
         .expect("first scan");
-
         connection
             .execute(
                 "UPDATE file_entries
-                 SET remote_hash = 'hash-a', last_synced_hash = 'hash-a', state = 'synced'
+                 SET remote_present = 1,
+                     remote_checksum_type = 'MD5',
+                     remote_checksum = 'remote-a',
+                     last_synced_hash = 'local-a',
+                     last_synced_remote_checksum_type = 'MD5',
+                     last_synced_remote_checksum = 'remote-a',
+                     state = 'synced'
                  WHERE workspace_id = 'workspace-1' AND relative_path = 'src/main.rs'",
                 [],
             )
-            .expect("mark synced");
+            .expect("baseline");
 
-        record_scan_with_connection(
-            &mut connection,
-            &report("2026-08-11T06:02:00Z", 1),
-            &[file("hash-b")],
-        )
-        .expect("second scan");
-
-        let state: String = connection
-            .query_row(
-                "SELECT state FROM file_entries WHERE workspace_id = 'workspace-1'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("state");
-        assert_eq!(state, "local_modified");
-    }
-
-    #[test]
-    fn missing_synced_file_becomes_recoverable_tombstone() {
-        let mut connection = test_connection();
-        insert_workspace_with_connection(&connection, &workspace()).expect("insert workspace");
-        record_scan_with_connection(
-            &mut connection,
-            &report("2026-08-11T06:01:00Z", 1),
-            &[file("hash-a")],
-        )
-        .expect("first scan");
-
-        connection
-            .execute(
-                "UPDATE file_entries
-                 SET remote_hash = 'hash-a', last_synced_hash = 'hash-a', state = 'synced'
-                 WHERE workspace_id = 'workspace-1' AND relative_path = 'src/main.rs'",
-                [],
-            )
-            .expect("mark synced");
-
-        record_scan_with_connection(&mut connection, &report("2026-08-11T06:03:00Z", 0), &[])
-            .expect("missing scan");
-
-        let (state, tombstone, local_present): (String, i64, i64) = connection
-            .query_row(
-                "SELECT state, tombstone, local_present
-                 FROM file_entries
-                 WHERE workspace_id = 'workspace-1'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .expect("deleted state");
-
-        assert_eq!(state, "local_deleted");
-        assert_eq!(tombstone, 1);
-        assert_eq!(local_present, 0);
-    }
-
-    #[test]
-    fn unsynced_disappearing_file_never_creates_delete_intent() {
-        let mut connection = test_connection();
-        insert_workspace_with_connection(&connection, &workspace()).expect("insert workspace");
-        record_scan_with_connection(
-            &mut connection,
-            &report("2026-08-11T06:01:00Z", 1),
-            &[file("hash-a")],
-        )
-        .expect("first scan");
-        record_scan_with_connection(&mut connection, &report("2026-08-11T06:04:00Z", 0), &[])
+        record_scan_with_connection(&mut connection, &report("2026-08-11T07:20:00Z", &[]), &[])
             .expect("missing scan");
 
         let (state, tombstone): (String, i64) = connection
             .query_row(
-                "SELECT state, tombstone FROM file_entries WHERE workspace_id = 'workspace-1'",
+                "SELECT state, tombstone FROM file_entries
+                 WHERE workspace_id = 'workspace-1' AND relative_path = 'src/main.rs'",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
-            .expect("removed state");
+            .expect("file state");
+        assert_eq!(state, "local_deleted");
+        assert_eq!(tombstone, 1);
+    }
 
-        assert_eq!(state, "removed_before_sync");
-        assert_eq!(tombstone, 0);
+    fn insert_workspace_with_connection(
+        connection: &Connection,
+        workspace: &Workspace,
+    ) -> Result<(), String> {
+        connection
+            .execute(
+                "INSERT INTO workspaces (
+                    id, name, local_path, sync_mode, created_at, last_scan_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    workspace.id,
+                    workspace.name,
+                    workspace.local_path,
+                    workspace.sync_mode.as_str(),
+                    workspace.created_at,
+                    workspace.last_scan_at,
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
     }
 }

@@ -128,3 +128,47 @@ pub struct RemoteFileObservation {
     pub checksum_type: Option<String>,
     pub checksum: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupPlanItem {
+    pub id: String,
+    pub relative_path: String,
+    pub action: String,
+    pub status: String,
+    pub size: Option<u64>,
+    pub block_reason: Option<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupPlan {
+    pub id: String,
+    pub workspace_id: String,
+    pub provider_id: String,
+    pub remote_path: String,
+    pub status: String,
+    pub created_at: String,
+    pub local_scan_at: String,
+    pub remote_inventory_at: String,
+    pub upload_count: u64,
+    pub upload_bytes: u64,
+    pub blocked_count: u64,
+    pub completed_count: u64,
+    pub failed_count: u64,
+    pub completed_at: Option<String>,
+    pub preview_truncated: bool,
+    pub items: Vec<BackupPlanItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupExecutionReport {
+    pub plan_id: String,
+    pub status: String,
+    pub completed_count: u64,
+    pub failed_count: u64,
+    pub uploaded_bytes: u64,
+    pub finished_at: String,
+}

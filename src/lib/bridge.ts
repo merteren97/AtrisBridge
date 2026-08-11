@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  BackupExecutionReport,
+  BackupPlan,
   JournalSummary,
   ProviderConnection,
   RcloneStatus,
@@ -71,4 +73,16 @@ export async function bindWorkspaceRemote(
 
 export async function scanRemoteInventory(id: string): Promise<RemoteInventoryReport> {
   return invoke<RemoteInventoryReport>("scan_remote_inventory", { id });
+}
+
+export async function getLatestBackupPlan(id: string): Promise<BackupPlan | null> {
+  return invoke<BackupPlan | null>("latest_backup_plan", { id });
+}
+
+export async function prepareBackupPlan(id: string): Promise<BackupPlan> {
+  return invoke<BackupPlan>("prepare_backup_plan", { id });
+}
+
+export async function executeBackupPlan(planId: string): Promise<BackupExecutionReport> {
+  return invoke<BackupExecutionReport>("execute_backup_plan", { planId });
 }
