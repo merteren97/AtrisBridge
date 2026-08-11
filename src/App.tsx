@@ -21,11 +21,12 @@ import {
 import {
   addWorkspace,
   initializeIgnoreFile,
+  listJournalSummaries,
   listWorkspaces,
   removeWorkspace,
   scanWorkspace,
 } from "./lib/bridge";
-import type { ScanReport, Workspace } from "./types";
+import type { JournalSummary, ScanReport, Workspace } from "./types";
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
@@ -51,6 +52,7 @@ export default function App() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [reports, setReports] = useState<Record<string, ScanReport>>({});
+  const [summaries, setSummaries] = useState<Record<string, JournalSummary>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -59,6 +61,7 @@ export default function App() {
     [selectedId, workspaces],
   );
   const report = selected ? reports[selected.id] : undefined;
+  const journal = selected ? summaries[selected.id] : undefined;
 
   useEffect(() => {
     void refreshWorkspaces();
@@ -67,8 +70,9 @@ export default function App() {
   async function refreshWorkspaces() {
     try {
       setError(null);
-      const items = await listWorkspaces();
+      const [items, journalItems] = await Promise.all([listWorkspaces(), listJournalSummaries()]);
       setWorkspaces(items);
+      setSummaries(Object.fromEntries(journalItems.map((item) => [item.workspaceId, item])));
       setSelectedId((current) => current ?? items[0]?.id ?? null);
     } catch (err) {
       setError(String(err));
@@ -87,7 +91,7 @@ export default function App() {
       setLoading(true);
       setError(null);
       const workspace = await addWorkspace(fileNameFromPath(path), path);
-      setWorkspaces((current) => [...current, workspace]);
+      await refreshWorkspaces();
       setSelectedId(workspace.id);
     } catch (err) {
       setError(String(err));
@@ -140,6 +144,11 @@ export default function App() {
         delete next[selected.id];
         return next;
       });
+      setSummaries((current) => {
+        const next = { ...current };
+        delete next[selected.id];
+        return next;
+      });
       const remaining = workspaces.filter((workspace) => workspace.id !== selected.id);
       setWorkspaces(remaining);
       setSelectedId(remaining[0]?.id ?? null);
@@ -150,8 +159,8 @@ export default function App() {
     }
   }
 
-  const totalKnownBytes = Object.values(reports).reduce((sum, item) => sum + item.totalBytes, 0);
-  const totalKnownFiles = Object.values(reports).reduce((sum, item) => sum + item.fileCount, 0);
+  const totalKnownBytes = Object.values(summaries).reduce((sum, item) => sum + item.presentBytes, 0);
+  const totalKnownFiles = Object.values(summaries).reduce((sum, item) => sum + item.presentFiles, 0);
 
   return (
     <div className="app-shell">
@@ -198,7 +207,7 @@ export default function App() {
           <article className="metric-card"><span className="metric-icon"><Box size={19} /></span><div><small>Workspaces</small><strong>{workspaces.length}</strong></div></article>
           <article className="metric-card"><span className="metric-icon"><FileCode2 size={19} /></span><div><small>Indexed files</small><strong>{totalKnownFiles.toLocaleString()}</strong></div></article>
           <article className="metric-card"><span className="metric-icon"><HardDrive size={19} /></span><div><small>Indexed size</small><strong>{formatBytes(totalKnownBytes)}</strong></div></article>
-          <article className="metric-card safe"><span className="metric-icon"><ShieldCheck size={19} /></span><div><small>Sync safety</small><strong>Protected</strong></div></article>
+          <article className="metric-card safe"><span className="metric-icon"><ShieldCheck size={19} /></span><div><small>Journal safety</small><strong>Durable</strong></div></article>
         </section>
 
         {selected ? (
@@ -215,28 +224,28 @@ export default function App() {
             </div>
 
             <div className="workspace-meta-grid">
-              <div><small>Mode</small><strong>Backup</strong><span>Cloud transport lands in Phase 2.</span></div>
-              <div><small>Last scan</small><strong>{formatDate(report?.scannedAt ?? selected.lastScanAt)}</strong><span>BLAKE3 inventory</span></div>
-              <div><small>Ignored</small><strong>{report?.skippedEntries ?? "—"}</strong><span>Safe defaults + custom rules</span></div>
-              <div><small>Warnings</small><strong>{report?.warnings.length ?? 0}</strong><span>Unreadable entries are never hidden</span></div>
+              <div><small>Mode</small><strong>Backup</strong><span>Cloud transport lands in Phase 3.</span></div>
+              <div><small>Last scan</small><strong>{formatDate(journal?.lastScanAt ?? report?.scannedAt ?? selected.lastScanAt)}</strong><span>BLAKE3 inventory + scan history</span></div>
+              <div><small>Journal</small><strong>{journal ? journal.presentFiles.toLocaleString() : "—"}</strong><span>{journal?.changedFiles ?? 0} changed · SQLite durable state</span></div>
+              <div><small>Safety queue</small><strong>{journal?.tombstones ?? 0} tombstones</strong><span>{journal?.conflicts ?? 0} conflicts · {journal?.pendingOperations ?? 0} queued</span></div>
             </div>
 
             <div className="inventory-card">
-              <div className="inventory-heading"><div><p className="eyebrow">Inventory preview</p><h3>{report ? `${report.fileCount.toLocaleString()} files · ${formatBytes(report.totalBytes)}` : "Scan to build a local inventory"}</h3></div>{report && <span className="duration">{report.durationMs} ms</span>}</div>
+              <div className="inventory-heading"><div><p className="eyebrow">Inventory preview</p><h3>{report ? `${report.fileCount.toLocaleString()} files · ${formatBytes(report.totalBytes)}` : journal?.lastScanAt ? `${journal.presentFiles.toLocaleString()} files persisted in journal` : "Scan to build a local inventory"}</h3></div>{report && <span className="duration">{report.durationMs} ms{report.warnings.length > 0 ? ` · ${report.warnings.length} warnings` : ""}</span>}</div>
               {!report ? (
-                <div className="empty-state"><ScanSearch size={28} /><strong>No inventory yet</strong><p>The scanner never follows symlinks and applies source-code safety ignores before hashing files.</p><button className="secondary-button" type="button" onClick={handleScan} disabled={loading}>Run first scan</button></div>
+                <div className="empty-state"><ScanSearch size={28} /><strong>{journal?.lastScanAt ? "Inventory is persisted" : "No inventory yet"}</strong><p>{journal?.lastScanAt ? "Run another scan to refresh the file preview. Durable counts and state survive application restarts." : "The scanner never follows symlinks and applies source-code safety ignores before hashing files."}</p><button className="secondary-button" type="button" onClick={handleScan} disabled={loading}>{journal?.lastScanAt ? "Refresh scan" : "Run first scan"}</button></div>
               ) : (
                 <div className="file-table-wrap">
                   <table className="file-table"><thead><tr><th>Path</th><th>Size</th><th>BLAKE3</th></tr></thead><tbody>{report.files.map((file) => <tr key={file.relativePath}><td><FileCode2 size={14} /><span>{file.relativePath}</span></td><td>{formatBytes(file.size)}</td><td><code>{file.blake3.slice(0, 16)}…</code></td></tr>)}</tbody></table>
-                  {report.previewTruncated && <p className="table-note">Preview limited to 250 entries. The summary includes the complete scan.</p>}
+                  {report.previewTruncated && <p className="table-note">Preview limited to 250 entries. The durable journal contains the complete scan inventory.</p>}
                 </div>
               )}
             </div>
 
-            <div className="danger-row"><div><strong>Remove workspace</strong><span>This removes AtrisBridge metadata only. Project files are never deleted.</span></div><button className="danger-button" type="button" onClick={handleRemove} disabled={loading}><Trash2 size={15} /> Remove</button></div>
+            <div className="danger-row"><div><strong>Remove workspace</strong><span>This removes AtrisBridge metadata and its journal only. Project files are never deleted.</span></div><button className="danger-button" type="button" onClick={handleRemove} disabled={loading}><Trash2 size={15} /> Remove</button></div>
           </section>
         ) : (
-          <section className="welcome-card"><div className="welcome-icon"><ShieldCheck size={30} /></div><p className="eyebrow">Start safely</p><h2>Add your first project workspace</h2><p>AtrisBridge will index the folder locally, apply conservative source-code ignores, and prepare it for a later cloud transport connection.</p><button className="primary-button" type="button" onClick={handleAddWorkspace} disabled={loading}><Plus size={16} /> Choose project folder</button></section>
+          <section className="welcome-card"><div className="welcome-icon"><ShieldCheck size={30} /></div><p className="eyebrow">Start safely</p><h2>Add your first project workspace</h2><p>AtrisBridge will index the folder locally, persist file state in SQLite, apply conservative source-code ignores, and prepare it for a later cloud transport connection.</p><button className="primary-button" type="button" onClick={handleAddWorkspace} disabled={loading}><Plus size={16} /> Choose project folder</button></section>
         )}
       </main>
     </div>

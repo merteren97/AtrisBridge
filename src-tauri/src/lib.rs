@@ -1,4 +1,5 @@
 mod commands;
+mod database;
 mod models;
 mod scanner;
 mod storage;
@@ -13,6 +14,8 @@ pub fn run() {
             commands::remove_workspace,
             commands::scan_workspace,
             commands::initialize_ignore_file,
+            commands::journal_summary,
+            commands::journal_summaries,
         ])
         .run(tauri::generate_context!())
         .expect("error while running AtrisBridge");
