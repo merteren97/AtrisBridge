@@ -6,6 +6,7 @@ mod commands;
 mod continuous;
 mod continuous_commands;
 mod database;
+mod desktop_shell;
 mod encryption;
 mod models;
 mod provider_sessions;
@@ -31,6 +32,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             app_updater::setup(app)?;
+            desktop_shell::setup(app)?;
             backup_recovery::recover_interrupted_plans(app.handle())
                 .map_err(std::io::Error::other)?;
             restore::recover_interrupted_restores(app.handle()).map_err(std::io::Error::other)?;
@@ -38,6 +40,7 @@ pub fn run() {
             continuous::initialize(app.handle()).map_err(std::io::Error::other)?;
             Ok(())
         })
+        .on_window_event(desktop_shell::handle_window_event)
         .invoke_handler(tauri::generate_handler![
             app_updater::get_update_runtime_info,
             app_updater::check_for_updates,
