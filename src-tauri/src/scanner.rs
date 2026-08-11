@@ -1,7 +1,7 @@
 use std::{
     fs::{self, File},
     io::Read,
-    path::{Path, PathBuf},
+    path::Path,
     time::Instant,
 };
 
@@ -27,6 +27,11 @@ const BUILTIN_DIRECTORY_IGNORES: &[&str] = &[
 ];
 const BUILTIN_SECRET_EXTENSIONS: &[&str] = &["pem", "key", "pfx", "p12"];
 
+pub struct ScanOutcome {
+    pub report: ScanReport,
+    pub inventory: Vec<ScanFile>,
+}
+
 struct ScanState {
     file_count: u64,
     directory_count: u64,
@@ -36,7 +41,7 @@ struct ScanState {
     warnings: Vec<String>,
 }
 
-pub fn scan(workspace_id: &str, root: &Path) -> Result<ScanReport, String> {
+pub fn scan(workspace_id: &str, root: &Path) -> Result<ScanOutcome, String> {
     if !root.is_dir() {
         return Err("Workspace directory no longer exists or is not accessible.".into());
     }
@@ -57,20 +62,24 @@ pub fn scan(workspace_id: &str, root: &Path) -> Result<ScanReport, String> {
         .files
         .sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
 
-    let preview_truncated = state.file_count as usize > PREVIEW_LIMIT;
-    state.files.truncate(PREVIEW_LIMIT);
+    let preview_truncated = state.files.len() > PREVIEW_LIMIT;
+    let preview = state.files.iter().take(PREVIEW_LIMIT).cloned().collect();
+    let scanned_at = Utc::now().to_rfc3339();
 
-    Ok(ScanReport {
-        workspace_id: workspace_id.to_owned(),
-        scanned_at: Utc::now().to_rfc3339(),
-        duration_ms: started.elapsed().as_millis(),
-        file_count: state.file_count,
-        directory_count: state.directory_count,
-        total_bytes: state.total_bytes,
-        skipped_entries: state.skipped_entries,
-        preview_truncated,
-        files: state.files,
-        warnings: state.warnings,
+    Ok(ScanOutcome {
+        report: ScanReport {
+            workspace_id: workspace_id.to_owned(),
+            scanned_at,
+            duration_ms: started.elapsed().as_millis(),
+            file_count: state.file_count,
+            directory_count: state.directory_count,
+            total_bytes: state.total_bytes,
+            skipped_entries: state.skipped_entries,
+            preview_truncated,
+            files: preview,
+            warnings: state.warnings,
+        },
+        inventory: state.files,
     })
 }
 
@@ -168,18 +177,16 @@ fn visit_directory(
         state.file_count += 1;
         state.total_bytes = state.total_bytes.saturating_add(metadata.len());
 
-        if state.files.len() < PREVIEW_LIMIT {
-            let modified_at = metadata.modified().ok().map(|value| {
-                let datetime: DateTime<Utc> = value.into();
-                datetime.to_rfc3339()
-            });
-            state.files.push(ScanFile {
-                relative_path: normalized_relative_path(relative),
-                size: metadata.len(),
-                modified_at,
-                blake3: digest,
-            });
-        }
+        let modified_at = metadata.modified().ok().map(|value| {
+            let datetime: DateTime<Utc> = value.into();
+            datetime.to_rfc3339()
+        });
+        state.files.push(ScanFile {
+            relative_path: normalized_relative_path(relative),
+            size: metadata.len(),
+            modified_at,
+            blake3: digest,
+        });
     }
 
     Ok(())
@@ -287,6 +294,8 @@ coverage/
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     #[test]

@@ -5,9 +5,12 @@ use tauri::AppHandle;
 use uuid::Uuid;
 
 use crate::{
-    models::{ScanReport, SyncMode, Workspace},
+    models::{JournalSummary, ScanReport, SyncMode, Workspace},
     scanner,
-    storage::{load_workspaces, save_workspaces},
+    storage::{
+        delete_workspace, find_workspace, get_journal_summary, insert_workspace,
+        list_journal_summaries, load_workspaces, record_scan,
+    },
 };
 
 #[tauri::command]
@@ -25,7 +28,7 @@ pub fn add_workspace(app: AppHandle, name: String, path: String) -> Result<Works
     let canonical = requested
         .canonicalize()
         .map_err(|error| format!("Could not access the selected directory: {error}"))?;
-    let mut workspaces = load_workspaces(&app)?;
+    let workspaces = load_workspaces(&app)?;
 
     for existing in &workspaces {
         if PathBuf::from(&existing.local_path)
@@ -57,47 +60,27 @@ pub fn add_workspace(app: AppHandle, name: String, path: String) -> Result<Works
         last_scan_at: None,
     };
 
-    workspaces.push(workspace.clone());
-    save_workspaces(&app, &workspaces)?;
+    insert_workspace(&app, &workspace)?;
     Ok(workspace)
 }
 
 #[tauri::command]
 pub fn remove_workspace(app: AppHandle, id: String) -> Result<(), String> {
-    let mut workspaces = load_workspaces(&app)?;
-    let initial_count = workspaces.len();
-    workspaces.retain(|workspace| workspace.id != id);
-
-    if workspaces.len() == initial_count {
-        return Err("Workspace was not found.".into());
-    }
-
-    save_workspaces(&app, &workspaces)
+    delete_workspace(&app, &id)
 }
 
 #[tauri::command]
 pub fn scan_workspace(app: AppHandle, id: String) -> Result<ScanReport, String> {
-    let mut workspaces = load_workspaces(&app)?;
-    let index = workspaces
-        .iter()
-        .position(|workspace| workspace.id == id)
-        .ok_or_else(|| "Workspace was not found.".to_string())?;
-
-    let root = PathBuf::from(&workspaces[index].local_path);
-    let report = scanner::scan(&id, &root)?;
-    workspaces[index].last_scan_at = Some(report.scanned_at.clone());
-    save_workspaces(&app, &workspaces)?;
-    Ok(report)
+    let workspace = find_workspace(&app, &id)?;
+    let root = PathBuf::from(&workspace.local_path);
+    let outcome = scanner::scan(&id, &root)?;
+    record_scan(&app, &outcome.report, &outcome.inventory)?;
+    Ok(outcome.report)
 }
 
 #[tauri::command]
 pub fn initialize_ignore_file(app: AppHandle, id: String) -> Result<bool, String> {
-    let workspaces = load_workspaces(&app)?;
-    let workspace = workspaces
-        .iter()
-        .find(|workspace| workspace.id == id)
-        .ok_or_else(|| "Workspace was not found.".to_string())?;
-
+    let workspace = find_workspace(&app, &id)?;
     let path = PathBuf::from(&workspace.local_path).join(".atrisbridgeignore");
     if path.exists() {
         return Ok(false);
@@ -106,4 +89,14 @@ pub fn initialize_ignore_file(app: AppHandle, id: String) -> Result<bool, String
     fs::write(&path, scanner::default_ignore_file())
         .map_err(|error| format!("Could not create .atrisbridgeignore: {error}"))?;
     Ok(true)
+}
+
+#[tauri::command]
+pub fn journal_summary(app: AppHandle, id: String) -> Result<JournalSummary, String> {
+    get_journal_summary(&app, &id)
+}
+
+#[tauri::command]
+pub fn journal_summaries(app: AppHandle) -> Result<Vec<JournalSummary>, String> {
+    list_journal_summaries(&app)
 }

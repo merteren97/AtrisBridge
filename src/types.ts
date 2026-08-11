@@ -28,3 +28,15 @@ export interface ScanReport {
   files: ScanFile[];
   warnings: string[];
 }
+
+export interface JournalSummary {
+  workspaceId: string;
+  trackedFiles: number;
+  presentFiles: number;
+  presentBytes: number;
+  changedFiles: number;
+  tombstones: number;
+  conflicts: number;
+  pendingOperations: number;
+  lastScanAt: string | null;
+}

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ScanReport, Workspace } from "../types";
+import type { JournalSummary, ScanReport, Workspace } from "../types";
 
 export async function listWorkspaces(): Promise<Workspace[]> {
   return invoke<Workspace[]>("list_workspaces");
@@ -19,4 +19,12 @@ export async function scanWorkspace(id: string): Promise<ScanReport> {
 
 export async function initializeIgnoreFile(id: string): Promise<boolean> {
   return invoke<boolean>("initialize_ignore_file", { id });
+}
+
+export async function getJournalSummary(id: string): Promise<JournalSummary> {
+  return invoke<JournalSummary>("journal_summary", { id });
+}
+
+export async function listJournalSummaries(): Promise<JournalSummary[]> {
+  return invoke<JournalSummary[]>("journal_summaries");
 }
