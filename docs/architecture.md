@@ -2,9 +2,9 @@
 
 ## Goal
 
-AtrisBridge is a local-first synchronization coordinator for source-code and engineering workspaces. The application owns safety policy, workspace state, conflict decisions, reviewable plans, recovery, and user-visible history. Storage providers are transports rather than synchronization authority.
+AtrisBridge is a local-first synchronization coordinator for source-code and engineering workspaces. The application owns safety policy, workspace state, conflict decisions, reviewable plans, recovery, credential routing, and optional encryption policy. Storage providers are transports rather than synchronization authority.
 
-## Current architecture — Phase 0 through Phase 6
+## Current architecture — Phase 0 through Phase 7
 
 ```text
 React / TypeScript UI
@@ -14,112 +14,101 @@ React / TypeScript UI
 Tauri / Rust application core
         |
         +-- workspace + sync-mode management
-        +-- safe local scanner
-        +-- .atrisbridgeignore + built-in exclusions
-        +-- BLAKE3 local fingerprints
+        +-- safe local scanner + .atrisbridgeignore
+        +-- BLAKE3 plaintext fingerprints
         +-- portable path / symlink guards
-        +-- SQLite evidence journal
-        |     |
-        |     +-- local observations
-        |     +-- remote observations
+        +-- SQLite evidence journal (no secrets)
+        |     +-- local/remote observations
         |     +-- synchronized baselines
-        |     +-- backup / restore / two-way plans
-        |     +-- conflicts + deletion recovery metadata
+        |     +-- backup/restore/two-way plans
+        |     +-- conflicts + recovery metadata
+        |     +-- non-secret encryption metadata
         |
-        +-- backup engine (local -> Drive)
-        +-- restore engine (Drive -> local staging -> verified apply)
-        +-- Phase 6 two-way planner / executor
+        +-- OS credential vault
+        |     +-- Google Drive OAuth JSON
+        |     +-- encrypted-workspace recovery key
+        |
+        +-- backup / restore / two-way planner-executors
               |
-              +-- restricted rclone byte transport
-              |     +-- inventory / stat
+              +-- optional content-encryption routing
+              |     +-- local plaintext <-> rclone crypt
+              |     +-- encrypted namespace + key sentinel
+              |
+              +-- restricted rclone transport
+              |     +-- inventory / targeted stat
               |     +-- single-file upload
               |     +-- staged single-file download
               |
               +-- narrow Google Drive control plane
-                    +-- exact reviewed file ID -> Trash
+                    +-- exact reviewed Drive file ID -> Trash
 ```
 
-The frontend never receives a generic filesystem, shell, rclone, or Drive API command surface. It calls narrow domain commands such as prepare/execute plan, set workspace mode, and restore a verified local recovery copy.
+The frontend never receives generic filesystem, shell, rclone, keyring, or Drive API capability. It receives only domain results and recovery keys when the user explicitly enables/exports encryption.
 
-## Durable state ownership
+## Secret ownership
 
-SQLite is the local source of truth for AtrisBridge coordination state, but it is never proof that the provider or filesystem is still unchanged. Execution therefore re-observes state before mutation and uses evidence-locked SQL completion.
+SQLite contains coordination metadata only. OAuth JSON and encryption recovery keys live in the operating-system credential vault and are loaded into Rust memory only when needed.
 
-The journal separates:
+An encrypted-workspace metadata row stores an opaque key reference, pinned managed remote root, encrypted namespace, key version, and verification timestamps. The master/recovery key itself is not stored in SQLite.
 
-1. local filesystem observations,
-2. remote provider observations,
-3. last successfully synchronized baseline,
-4. immutable/reviewable plan evidence,
-5. conflict/block decisions,
-6. deletion/recovery metadata,
-7. scan and execution history.
+## Durable evidence ownership
 
-The database lives in OS application data rather than inside the synchronized workspace.
+SQLite is AtrisBridge's local coordination source of truth, but never proof that provider/filesystem state is still current. Execution re-observes both sides before mutation and uses evidence-locked SQL completion.
 
-## Scanner boundary
+Evidence is deliberately typed:
 
-The scanner produces a complete inventory for the journal and only a bounded preview for the UI. It:
+- local plaintext: BLAKE3 + size,
+- plaintext Drive object: provider ID + size + MD5,
+- encrypted Drive object: logical plaintext size + underlying ciphertext Drive ID + ciphertext MD5 (`RCLONE_CRYPT_MD5`).
 
-- hashes regular files with BLAKE3,
-- does not follow symlinks,
-- applies built-in generated/secret exclusions,
-- applies `.atrisbridgeignore`,
-- excludes AtrisBridge `.part`/`.bak` transfer-recovery artifacts.
+Provider hashes are never compared to local BLAKE3 as if they were the same algorithm or representation.
 
-Unreadable paths are warnings/errors, not implicit deletion authority.
+## Encryption boundary
+
+Phase 7 can route a workspace through a dedicated `.atrisbridge-crypt-v1` namespace under its managed Drive root.
+
+The first encrypted format protects regular-file contents while leaving filenames and directory structure visible. This keeps the current logical-path, collision, provider-ID, exact-ID Trash, and conflict model intact.
+
+A reserved encrypted sentinel verifies the recovery key. Missing/corrupt sentinel or ciphertext evidence is an error rather than an empty remote inventory. This prevents wrong-key/corruption states from creating false delete intent.
+
+Encryption can be enabled/imported only before a synchronized baseline exists. AtrisBridge does not automatically migrate an established plaintext workspace to ciphertext or vice versa.
 
 ## Planner boundary
 
-The planner compares **current local**, **current remote**, and **last synchronized** evidence. It does not use modification time as a winner rule.
+Backup, restore, and two-way planners compare current local, current remote, and last accepted baseline evidence. Modification time is never a winner rule.
 
-Phase 6 classifies each path into an explicit safe action, conflict, block, or no-op. The executor accepts only persisted `ready` actions and refreshes both inventories again before beginning.
-
-Backup, restore, and two-way execution are mutually exclusive per workspace in the normal command path.
+Phase 7 does not alter conflict semantics: encrypted provider evidence participates in the same baseline comparisons using its distinct checksum type. A file changing on both sides remains a conflict.
 
 ## Provider boundaries
 
-### rclone
+### Restricted rclone
 
-rclone is a restricted byte transport and observation adapter. AtrisBridge does not expose generic rclone arguments, `sync`, `bisync`, RC, mount, or provider-wide destructive commands.
+rclone remains a constrained observation/byte transport. For encrypted workspaces it additionally performs crypt encryption/decryption with ephemeral process configuration. Generic arguments, `sync`, `bisync`, RC, mount, serve, purge, and arbitrary destructive commands remain unavailable.
 
-### Direct Google Drive control plane
+### Google Drive exact-ID control plane
 
-Phase 6 adds one narrow exception: local-deletion propagation moves the **exact reviewed Drive file ID** to Trash through Google Drive `files.update` with `trashed=true`.
+Reviewed remote Trash remains the only narrow direct Drive mutation outside rclone. For encrypted workspaces the reviewed ID is the underlying ciphertext Drive object ID, so path reuse cannot redirect the Trash request to another object.
 
-This is intentionally not a general Drive API abstraction. The request uses the current in-memory provider session, returns fail-closed on authentication/provider errors, and does not add persistent plaintext credentials.
+Permanent remote deletion is not implemented.
 
-Permanent remote deletion is not part of the current architecture.
+## Recovery boundary
 
-## Local recovery boundary
+Remote deletion cannot directly remove a local file. AtrisBridge first creates an app-data recovery copy, verifies BLAKE3 + size, persists applying state, repeats remote-absence checks, and only then removes the local file.
 
-A remote deletion cannot directly remove a local file. The Phase 6 engine first creates an app-data recovery copy, verifies BLAKE3 + size, flushes it, persists apply evidence, and repeatedly rechecks remote absence before local removal.
+Encryption recovery keys have a separate lifecycle: Phase 7 intentionally does not auto-delete them when workspace metadata is removed, because losing the last key could make remote ciphertext unrecoverable.
 
-Recovery metadata and deletion convergence are transactionally coupled. Verified recovery copies can be restored locally through an explicit user action that refuses overwrite and never changes Drive.
+## Concurrency boundary
 
-## Process and concurrency boundaries
+The local filesystem and Google Drive cannot be made one distributed atomic transaction. Safety is built from fresh observations, reviewable immutable plan evidence, repeated targeted preflight, exact-ID remote Trash, staged/recoverable local mutations, postflight verification, and conditional SQLite completion.
 
-SQLite uses short-lived connections, foreign keys, WAL journaling, a bounded busy timeout, and conditional updates against the exact planned evidence.
-
-AtrisBridge cannot make the local filesystem and Google Drive one distributed atomic transaction. Safety therefore comes from:
-
-- fresh observation before planning and execution,
-- exact plan evidence,
-- repeated targeted preflight,
-- live absence checks around deletion propagation,
-- exact-ID remote Trash,
-- staged/recoverable local mutation,
-- postflight verification,
-- fail-closed conflict/block behavior.
-
-Provider-side races between separate network requests are documented rather than hidden behind last-write-wins.
+Provider-side races are surfaced as failures/conflicts requiring fresh review rather than hidden behind last-write-wins.
 
 ## Trust boundaries
 
-- **React UI:** untrusted from filesystem/shell/provider perspective; narrow IPC only.
-- **Rust core:** validates paths, owns planner/executor/recovery policy and database state.
-- **SQLite journal:** durable coordination evidence; never proof that external state is still current.
-- **rclone sidecar:** powerful external process constrained to dedicated functions and pinned runtime.
-- **Google Drive API:** remote/fallible; exact-ID Trash only, no generic frontend surface.
-- **local recovery area:** AtrisBridge-owned app-data content verified by BLAKE3 + size before use.
-- **storage provider:** potentially concurrent with other clients; never trusted to make conflict decisions for AtrisBridge.
+- **React UI:** untrusted for direct filesystem/provider/secret operations.
+- **Rust core:** owns planner/executor, path safety, secret routing, encryption policy, and recovery.
+- **OS credential vault:** persistent secret storage.
+- **SQLite:** non-secret durable evidence/history.
+- **rclone sidecar:** pinned external transport constrained to dedicated operations.
+- **Google Drive:** fallible/concurrent remote store, never synchronization authority.
+- **app-data recovery area:** local recovery material verified before use.

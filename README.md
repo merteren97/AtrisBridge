@@ -2,102 +2,103 @@
 
 AtrisBridge is a local-first desktop application for keeping engineering and software project workspaces portable, inspectable, and ready for safe synchronization across machines.
 
-> **Status:** early alpha (`0.1.0-alpha.5`). Local inventory, durable SQLite state, restricted Google Drive transport, guarded backup, verified restore, and explicit conflict-aware two-way synchronization are implemented. Continuous background sync and automatic conflict resolution remain disabled.
+> **Status:** early alpha (`0.1.0-alpha.6`). Local inventory, durable SQLite state, restricted Google Drive transport, guarded backup/restore, conflict-aware two-way synchronization, OS-backed credential persistence, and optional client-side content encryption are implemented.
 
 [Türkçe README](README_TR.md)
 
 ## Why AtrisBridge?
 
-Moving active projects between development machines often turns into manual ZIP archives, ad-hoc cloud folders, stale copies, and uncertainty about which version is current. AtrisBridge puts a conservative coordination layer between a local project and a storage provider:
+Moving active projects between development machines often turns into manual ZIP archives, ad-hoc cloud folders, stale copies, and uncertainty about which version is current. AtrisBridge puts a conservative synchronization layer between a local project and a storage provider:
 
 - local-first workspace metadata and scanning,
 - durable SQLite file state across restarts,
 - BLAKE3 local fingerprints,
-- separate remote provider ID/size/checksum evidence,
-- explicit last-synchronized baselines,
-- conservative secret/generated-file exclusions and `.atrisbridgeignore`,
-- no symlink traversal for synchronized paths,
-- review-first backup, restore, and two-way plans,
-- recoverable deletion semantics instead of blind permanent deletes.
+- explicit local / remote / synchronized-baseline evidence,
+- conflict-aware two-way plans instead of last-write-wins,
+- recoverable deletion propagation,
+- OS-native secure credential storage,
+- optional client-side content encryption,
+- provider-independent architecture with Google Drive as the first transport.
 
 ## What works today
 
-Phase 0 through Phase 6 provide the first complete reviewed synchronization loop:
+Phase 0 through Phase 7 currently provide:
 
 - Tauri 2 + React + TypeScript desktop shell,
-- workspace management and native directory picker,
+- local workspace management and native directory picker,
 - Rust scanner with BLAKE3 fingerprints,
+- built-in exclusions for generated output, Git metadata, IDE caches, `.env*`, common private-key/certificate formats, and AtrisBridge recovery artifacts,
+- optional `.atrisbridgeignore`,
 - SQLite state under the OS application-data directory,
-- persistent local/remote/last-synchronized evidence,
-- exact pinned rclone `v1.74.4` runtime validation,
-- Google Drive OAuth with `drive.file`, with OAuth session data held in process memory only,
-- workspace → managed Drive folder binding,
+- persistent local and remote inventory evidence,
+- pinned rclone `v1.74.4` runtime validation,
+- Google Drive OAuth using `drive.file`,
+- OAuth credentials persisted only through the operating-system credential vault,
+- workspace-to-Drive-folder bindings,
 - guarded local → Drive backup,
-- verified Drive → local restore,
-- explicit **Two-Way** workspace mode,
-- fresh local + remote observations before planning and again before execution,
-- baseline-based upload/download decisions,
-- modify/modify and delete/modify conflicts surfaced without last-write-wins,
-- reviewed local deletion → exact reviewed Google Drive file ID moved to Trash,
-- reviewed remote deletion → verified local recovery copy before local removal,
-- user-visible recovery copies that can be restored locally without changing Drive,
-- live local/remote absence checks immediately around deletion propagation,
-- startup recovery for interrupted transfer/apply states,
-- two-step desktop flow: **Prepare → review → Run**,
+- explicit Drive → local restore with staging and rollback,
+- conflict-aware reviewed two-way synchronization,
+- exact-ID Google Drive Trash for reviewed deletion propagation,
+- app-data recovery copies before reviewed local deletion propagation,
+- explicit recovery-copy restore,
+- optional per-workspace client-side **content encryption** using the restricted crypt transport,
+- `AB1-...` recovery-key export/import for encrypted workspaces,
+- fresh evidence before planning and again before execution,
 - Linux CI for frontend and Rust validation.
 
-Removing a workspace deletes only AtrisBridge metadata, never the project directory. Forgetting a provider removes local provider metadata and the in-memory session; it does not delete Drive data.
+Removing a workspace removes AtrisBridge coordination metadata and never deletes project files. Phase 7 also deliberately does **not** automatically destroy the encrypted workspace recovery key from the OS credential vault when workspace metadata is removed; silent key destruction could make remote ciphertext unrecoverable.
 
-## Phase 6 — conflict-aware two-way synchronization
+## Synchronization safety
 
-Two-way behavior must be enabled explicitly per workspace. Enabling the mode starts no transfer by itself. **Prepare sync** refreshes both inventories and persists a reviewable plan; only **Run sync** executes still-valid safe items.
+AtrisBridge uses explicit reviewed plans rather than background last-write-wins behavior.
 
-AtrisBridge compares current local and remote evidence with the last successfully synchronized baseline:
+For two-way synchronization:
 
-| Local | Remote | Baseline interpretation | Decision |
-| --- | --- | --- | --- |
-| new | absent | no baseline | upload create |
-| absent | new | no baseline | download create |
-| present | present | no baseline | block unverified overlap |
-| changed | unchanged | verified | upload update |
-| unchanged | changed | verified | download update |
-| changed | changed | verified | conflict; touch neither side |
-| deleted | unchanged | verified | move reviewed Drive file ID to Trash |
-| deleted | changed | verified | delete/modify conflict |
-| unchanged | deleted | verified | recoverable local delete |
-| changed | deleted | verified | delete/modify conflict |
-| deleted | deleted | verified | acknowledge converged deletion |
+- local changed / remote unchanged → reviewed upload,
+- local unchanged / remote changed → reviewed download,
+- both changed → conflict,
+- local deleted / remote unchanged → exact reviewed Drive object moves to Trash,
+- remote deleted / local unchanged → verified local recovery copy, then reviewed local deletion,
+- delete/modify overlap → conflict,
+- both absent after a shared baseline → converged deletion acknowledgement.
 
-Modification time is not used as conflict authority. If evidence is incomplete, ambiguous, ignored, unsafe, or colliding on a case-insensitive filesystem, AtrisBridge blocks the item instead of guessing.
+Modification time is never used as conflict authority. Provider and filesystem state are refreshed before execution and journal completion remains evidence-locked.
 
-### Deletion safety
+## Phase 7 secure credential storage
 
-**Local deletion → Drive:** the current remote ID, size, and MD5 must still match the synchronized evidence. AtrisBridge also rechecks that the local path is still absent immediately before the provider mutation. The reviewed Google Drive object is moved to **Trash by exact file ID**; permanent delete is not exposed. A postflight path check prevents a newly created object at the same path from being mistaken for the trashed object.
+Google Drive OAuth credentials are no longer intentionally session-only. AtrisBridge persists them through the operating system's secure credential facility and lazily reloads them into the Rust process when needed.
 
-**Remote deletion → local:** the local BLAKE3 + size must still match baseline and targeted Drive checks must continue to prove that the remote path is absent. Before the local file is removed, AtrisBridge copies it under its application-data recovery area, verifies BLAKE3 + size, flushes the recovery file, persists an `applying` state, and only then removes the workspace file. Recovery metadata, deletion convergence, and operation completion are committed together in SQLite.
+Credentials are not stored in:
 
-Available recovery copies are visible in the Two-Way panel. **Restore locally** verifies the app-data recovery file again, refuses to overwrite an existing path, recreates the file as a local-only change, and never modifies Drive. The next reviewed sync plan decides what to do with that recreated file.
+- SQLite,
+- `rclone.conf`,
+- `.env` files,
+- synchronized workspaces,
+- repository files.
 
-### Provider race boundary
+Removing the saved provider credential requires a new Google authorization before cloud operations can resume. Forgetting the provider also removes its AtrisBridge provider metadata; it does not delete Drive data.
 
-AtrisBridge deliberately does not claim provider-native atomic compare-and-swap for content writes or Trash. Fresh inventories, targeted ID/checksum preflight, live absence checks, exact-ID Trash, postflight verification, and recoverable local mutations narrow the race windows, but another Drive client can still change an object between separate provider requests. Because Trash is recoverable and conflicts are never resolved automatically, uncertain states fail closed and require a fresh reviewed plan.
+## Phase 7 optional client-side encryption
 
-The direct Drive Trash control-plane request uses the current in-memory OAuth access token. If that access token is no longer valid, the operation fails safely and the provider can be reconnected; AtrisBridge still does not persist plaintext OAuth credentials.
+Client-side encryption is opt-in per workspace. It can only be attached before the workspace has an accepted synchronized baseline, and the managed remote root must be empty. Phase 7 deliberately does **not** perform an in-place plaintext-to-ciphertext migration.
 
-See [docs/sync-engine.md](docs/sync-engine.md) and [docs/rclone-transport.md](docs/rclone-transport.md).
+When enabled:
 
-## Phase 4/5 one-way safety
+- regular file contents are encrypted locally before Drive receives them,
+- decrypted bytes are produced locally during restore/sync,
+- the encryption master key is represented by an `AB1-...` recovery key,
+- the recovery key is stored in the OS credential vault,
+- users can explicitly export or import the recovery key,
+- local BLAKE3 and remote ciphertext provider evidence stay separate,
+- encrypted Drive objects are still addressed by exact provider ID for reviewed Trash operations.
 
-Backup and restore remain available as explicit one-way workflows when the workspace is not in Two-Way mode.
+### Metadata limitation
 
-- **Backup:** local → Drive only; local deletion never implies remote deletion.
-- **Restore:** Drive → local only; remote absence never implies local deletion.
-- Restore downloads go to hidden staging first and are verified before local apply.
-- Existing local restore targets use a temporary `.bak` recovery copy until journal completion.
+The first encrypted transport intentionally uses rclone crypt with filename encryption disabled. **File contents are encrypted, but filenames and directory structure remain visible to the storage provider.** This preserves AtrisBridge's current exact path, provider-ID, collision, conflict, and deletion evidence model.
 
-See [docs/backup-engine.md](docs/backup-engine.md) and [docs/restore-engine.md](docs/restore-engine.md).
+A missing/corrupt encrypted namespace or key-verification sentinel is treated as an unsafe provider state, not as a clean empty remote inventory. AtrisBridge fails closed instead of converting that uncertainty into deletion intent.
 
-## Roadmap
+## Planned roadmap
 
 1. **Phase 0/1 — foundation and local inventory** ✅
 2. **Phase 2 — SQLite sync journal and durable file state** ✅
@@ -105,21 +106,21 @@ See [docs/backup-engine.md](docs/backup-engine.md) and [docs/restore-engine.md](
 4. **Phase 4 — safe incremental backup** ✅
 5. **Phase 5 — safe pull and restore** ✅
 6. **Phase 6 — conflict-aware two-way synchronization** ✅
-7. **Phase 7 — persistent secure credential storage + optional client-side encryption**
+7. **Phase 7 — persistent secure credential storage + optional client-side content encryption** ✅
 8. **Phase 8+ — continuous watch mode, tray, additional providers, and release pipeline**
 
 See [docs/architecture.md](docs/architecture.md), [docs/sync-engine.md](docs/sync-engine.md), [docs/security.md](docs/security.md), [docs/rclone-transport.md](docs/rclone-transport.md), [docs/backup-engine.md](docs/backup-engine.md), and [docs/restore-engine.md](docs/restore-engine.md).
 
 ## Development
 
-### Requirements
+Requirements:
 
 - Node.js LTS
 - npm
 - Rust stable
 - Tauri 2 platform prerequisites for your OS
 
-AtrisBridge does not execute an arbitrary `rclone` from the system `PATH`:
+Prepare the pinned rclone development sidecar:
 
 ```bash
 npm install
@@ -127,27 +128,20 @@ npm run sidecar:prepare
 npm run tauri:dev
 ```
 
-`sidecar:prepare` downloads rclone `v1.74.4` from the official release host, verifies the platform-specific SHA-256 digest, and places the executable under `src-tauri/binaries/`. The binary is ignored by Git.
+`sidecar:prepare` downloads rclone `v1.74.4` from the official release host, verifies the platform-specific SHA-256 checksum, and places the executable under `src-tauri/binaries/`. The binary is ignored by Git.
 
 Validation:
 
 ```bash
 npm run build
+cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 cargo test --manifest-path src-tauri/Cargo.toml --lib
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
-## Google Drive behavior
-
-Google Drive uses browser-based OAuth with `drive.file`. Provider operations are restricted to an `AtrisBridge/...` managed workspace path. Regular transfer bytes remain behind narrow rclone operations; Phase 6 uses a narrow direct Drive API request only for moving the exact reviewed file ID to Trash.
-
-Remote provider checksums such as MD5 are stored as provider evidence and never treated as BLAKE3. Native Google Docs are skipped by the current regular-file adapter.
-
-The OAuth token is held only in process memory. Restarting AtrisBridge requires reconnecting until the Phase 7 secure credential layer is introduced.
-
 ## `.atrisbridgeignore`
 
-AtrisBridge supports gitignore-compatible project rules in `.atrisbridgeignore`. Built-in rules remain active even if the custom file is absent.
+AtrisBridge supports gitignore-compatible project rules in `.atrisbridgeignore` at the workspace root. Built-in safety exclusions remain active even when the custom file is absent.
 
 ```gitignore
 artifacts/
@@ -156,17 +150,9 @@ customer-dumps/
 *.bak
 ```
 
-Built-in rules exclude Git metadata, common generated/IDE directories, `.env*`, common private-key/certificate formats, and AtrisBridge `.part`/`.bak` transfer-recovery artifacts.
-
-## Durable sync journal
-
-AtrisBridge stores coordination state in `atrisbridge.db` under the OS application-data directory. SQLite uses foreign keys, WAL journaling, and a bounded busy timeout. Local observations, remote observations, synchronized baselines, plans, conflicts, and recovery metadata remain separate evidence classes.
-
-Phase 5 and Phase 6 add feature-owned tables idempotently without destructively rewriting the existing Phase 4 core tables. Interrupted operations are never silently retried or declared synchronized; startup recovery retires or safely rolls back only states for which stored fingerprints prove the mutation.
-
 ## Security and project policy
 
-AtrisBridge can reduce accidental leakage, but it cannot grant permission to upload proprietary or customer-controlled code to third-party infrastructure. Always follow the policy, DLP, contractual, data-residency, export-control, and authorization requirements that apply to the project you are synchronizing.
+AtrisBridge can reduce accidental leakage and destructive synchronization, but it cannot grant permission to upload proprietary or customer-controlled code to third-party infrastructure. Always follow the policy, DLP, contractual, data-residency, export-control, and authorization requirements that apply to the project being synchronized.
 
 Do not report security vulnerabilities in public issues. See [SECURITY.md](SECURITY.md).
 

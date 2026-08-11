@@ -96,6 +96,7 @@ pub struct ProviderConnection {
     pub created_at: String,
     pub last_verified_at: Option<String>,
     pub session_active: bool,
+    pub credential_persisted: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -106,6 +107,25 @@ pub struct WorkspaceRemoteBinding {
     pub remote_path: String,
     pub created_at: String,
     pub last_inventory_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceEncryptionStatus {
+    pub workspace_id: String,
+    pub mode: String,
+    pub key_available: bool,
+    pub filename_encrypted: bool,
+    pub remote_namespace: Option<String>,
+    pub enabled_at: Option<String>,
+    pub verified_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptionEnableResult {
+    pub status: WorkspaceEncryptionStatus,
+    pub recovery_key: String,
 }
 
 #[derive(Debug, Serialize)]

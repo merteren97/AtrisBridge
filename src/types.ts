@@ -57,6 +57,7 @@ export interface ProviderConnection {
   createdAt: string;
   lastVerifiedAt: string | null;
   sessionActive: boolean;
+  credentialPersisted: boolean;
 }
 
 export interface WorkspaceRemoteBinding {
@@ -65,6 +66,21 @@ export interface WorkspaceRemoteBinding {
   remotePath: string;
   createdAt: string;
   lastInventoryAt: string | null;
+}
+
+export interface WorkspaceEncryptionStatus {
+  workspaceId: string;
+  mode: "disabled" | "content";
+  keyAvailable: boolean;
+  filenameEncrypted: boolean;
+  remoteNamespace: string | null;
+  enabledAt: string | null;
+  verifiedAt: string | null;
+}
+
+export interface EncryptionEnableResult {
+  status: WorkspaceEncryptionStatus;
+  recoveryKey: string;
 }
 
 export interface RemoteInventoryReport {

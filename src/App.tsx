@@ -22,6 +22,7 @@ import {
   Unplug,
 } from "lucide-react";
 import BackupPanel from "./BackupPanel";
+import EncryptionPanel from "./EncryptionPanel";
 import {
   addWorkspace,
   bindWorkspaceRemote,
@@ -97,6 +98,7 @@ export default function App() {
   const backupReady = Boolean(
     selected && binding && googleDrive?.sessionActive && rcloneStatus?.available,
   );
+  const encryptionReady = Boolean(backupReady && googleDrive?.credentialPersisted);
 
   useEffect(() => {
     void refreshWorkspaces();
@@ -243,8 +245,13 @@ export default function App() {
   }
 
   async function handleDisconnectCloudSession() {
-    if (!googleDrive) return;
-    try {
+  if (!googleDrive) return;
+  if (!window.confirm(
+    "Remove the saved Google Drive credential from this device? Cloud operations will require Google authorization again. Drive data is not deleted.",
+  )) {
+    return;
+  }
+  try {
       setCloudLoading("disconnect");
       await disconnectProviderSession(googleDrive.id);
       await refreshCloud();
@@ -400,7 +407,7 @@ export default function App() {
           <div className="cloud-card-header">
             <div className="cloud-title">
               <span className="cloud-icon"><CloudCog size={19} /></span>
-              <div><p className="eyebrow">{selected?.syncMode === "two_way" ? "Phase 6 guarded transport" : "Phase 4/5 guarded transport"}</p><h2>Google Drive</h2></div>
+              <div><p className="eyebrow">{selected?.syncMode === "two_way" ? "Phase 7 protected transport" : "Phase 4/5 guarded transport"}</p><h2>Google Drive</h2></div>
             </div>
             <span className="read-only-pill"><ShieldCheck size={12} /> {selected?.syncMode === "two_way" ? "Reviewed two-way" : "Guarded transfer"}</span>
           </div>
@@ -420,11 +427,13 @@ export default function App() {
                 <small>Provider session</small>
                 <strong>{googleDrive?.accountLabel ?? googleDrive?.displayName ?? "Not connected"}</strong>
                 <span>
-                  {googleDrive?.sessionActive
-                    ? "OAuth session active in memory"
-                    : googleDrive
-                      ? "Reconnect after app restart"
-                      : "Restricted drive.file scope"}
+                  {googleDrive?.credentialPersisted
+                    ? "Credential protected by the OS secure vault · restart-safe"
+                    : googleDrive?.sessionActive
+                      ? "Session active · secure persistence unavailable"
+                      : googleDrive
+                        ? "Credential not stored on this device"
+                        : "Restricted drive.file scope"}
                 </span>
               </div>
               <div className="cloud-provider-actions">
@@ -498,6 +507,14 @@ export default function App() {
             </div>
           )}
 
+          {selected && binding && googleDrive && (
+            <EncryptionPanel
+              workspaceId={selected.id}
+              ready={encryptionReady}
+              onError={(message) => setError(message)}
+            />
+          )}
+
           {selected && (
             <BackupPanel
               workspace={selected}
@@ -508,7 +525,7 @@ export default function App() {
           )}
 
           <p className="cloud-security-note">
-            <ShieldCheck size={13} /> OAuth tokens stay in process memory only. {selected?.syncMode === "two_way" ? "Phase 6 enables reviewed uploads/downloads and recoverable deletion convergence; permanent Drive deletion and automatic conflict resolution remain unavailable." : "Backup and restore remain explicit reviewed flows; permanent remote deletion remains unavailable."}
+            <ShieldCheck size={13} /> Google Drive credentials are stored only through the operating system secure credential vault. Client-side encryption is optional and protects file contents before upload; Phase 7 intentionally leaves filenames and directory structure visible.
           </p>
         </section>
 

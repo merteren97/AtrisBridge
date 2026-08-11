@@ -82,3 +82,46 @@
   .backup-plan-metrics > div { border-right: 0; border-bottom: 1px solid #202c35; }
   .backup-plan-metrics > div:last-child { border-bottom: 0; }
 }
+
+
+.encryption-card { border-top: 1px solid #1e2832; background: #0c1318; }
+.encryption-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 15px 18px; }
+.encryption-title { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.encryption-icon { width: 30px; height: 30px; display: grid; flex: 0 0 auto; place-items: center; border: 1px solid #28443f; border-radius: 8px; background: #10211e; color: #4bcbbb; }
+.encryption-title small, .encryption-title strong, .encryption-title span { display: block; }
+.encryption-title small { color: #65737e; font-size: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
+.encryption-title strong { margin-top: 3px; color: #ccd6dd; font-size: 11px; }
+.encryption-title span { margin-top: 3px; color: #65717c; font-size: 9px; line-height: 1.5; }
+.encryption-state { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; padding: 5px 8px; border: 1px solid #34404a; border-radius: 999px; color: #83909b; font-size: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+.encryption-state.enabled { border-color: #285047; color: #62cdbd; background: #0f1e1b; }
+.encryption-body { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 18px 15px 58px; }
+.encryption-body.disabled { align-items: flex-start; }
+.encryption-facts { display: grid; flex: 1; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.encryption-facts > div { min-width: 0; padding: 9px 10px; border: 1px solid #202c35; border-radius: 8px; background: #0e161c; }
+.encryption-facts small, .encryption-facts strong { display: block; }
+.encryption-facts small { color: #65727c; font-size: 7px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; }
+.encryption-facts strong { margin-top: 4px; overflow: hidden; color: #bbc7cf; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.encryption-warning { display: flex; align-items: flex-start; gap: 7px; max-width: 610px; color: #9a856b; font-size: 8px; line-height: 1.55; }
+.encryption-warning svg { flex: 0 0 auto; color: #c49564; }
+.encryption-actions { display: flex; align-items: center; gap: 8px; }
+.recovery-import { display: flex; align-items: center; gap: 7px; }
+.recovery-import input { width: 220px; min-width: 0; border: 1px solid #29343e; border-radius: 8px; padding: 8px 9px; outline: none; background: #0a1015; color: #c5d0d7; font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace; font-size: 9px; }
+.recovery-key-box { margin: 0 18px 15px 58px; padding: 11px 12px; border: 1px solid #3c3927; border-radius: 9px; background: #18170f; }
+.recovery-key-box > div:first-child strong, .recovery-key-box > div:first-child span { display: block; }
+.recovery-key-box > div:first-child strong { color: #ddd2a5; font-size: 10px; }
+.recovery-key-box > div:first-child span { margin-top: 3px; color: #8c8262; font-size: 8px; line-height: 1.5; }
+.recovery-key-value { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
+.recovery-key-value code { min-width: 0; flex: 1; overflow-wrap: anywhere; color: #cfc7a1; font-size: 9px; }
+
+@media (max-width: 1050px) {
+  .encryption-body { align-items: stretch; flex-direction: column; }
+  .encryption-actions { align-items: stretch; flex-direction: column; }
+  .recovery-import { align-items: stretch; }
+  .recovery-import input { flex: 1; width: auto; }
+}
+@media (max-width: 760px) {
+  .encryption-header { flex-direction: column; }
+  .encryption-body, .recovery-key-box { padding-left: 18px; margin-left: 0; }
+  .encryption-facts { grid-template-columns: 1fr; }
+  .recovery-import { flex-direction: column; }
+}

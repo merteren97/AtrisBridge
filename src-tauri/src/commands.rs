@@ -8,7 +8,7 @@ use tauri::{AppHandle, State};
 use uuid::Uuid;
 
 use crate::{
-    backup,
+    backup, encryption,
     models::{
         BackupExecutionReport, BackupPlan, JournalSummary, ProviderConnection, RcloneStatus,
         RemoteFileObservation, RemoteInventoryReport, ScanReport, SyncMode, Workspace,
@@ -124,6 +124,7 @@ pub fn provider_connections(
     let mut providers = provider_storage::list_provider_connections(&app)?;
     for provider in &mut providers {
         provider.session_active = sessions.is_active(&provider.id)?;
+        provider.credential_persisted = sessions.is_persisted(&provider.id)?;
     }
     Ok(providers)
 }
@@ -152,6 +153,7 @@ pub async fn connect_google_drive(
     let mut provider = provider_storage::upsert_google_drive_connection(&app, account_label)?;
     sessions.set_google_drive_token(&provider.id, token)?;
     provider.session_active = true;
+    provider.credential_persisted = true;
     Ok(provider)
 }
 
@@ -193,6 +195,7 @@ pub fn bind_workspace_remote(
     if normalized.is_empty() {
         return Err("Choose a dedicated Google Drive folder for this workspace.".into());
     }
+    encryption::ensure_binding_change_allowed(&app, &id, &normalized)?;
     provider_storage::bind_workspace(&app, &id, &provider_id, &normalized)
 }
 

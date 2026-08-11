@@ -1,7 +1,8 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
+    io::Write,
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
 };
 
 use serde::Deserialize;
@@ -9,12 +10,16 @@ use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
 use crate::{
+    encryption::{self, CryptTransportContext},
     models::{RcloneStatus, RemoteFileObservation},
     scanner,
 };
 
 pub const REQUIRED_RCLONE_VERSION: &str = "1.74.4";
 const DRIVE_SCOPE: &str = "drive.file";
+pub const CRYPT_CHECKSUM_TYPE: &str = "RCLONE_CRYPT_MD5";
+const ENCRYPTION_SENTINEL: &str = ".atrisbridge-key-check";
+const ENCRYPTION_SENTINEL_CONTENT: &[u8] = b"AtrisBridge encrypted workspace sentinel v1\n";
 const RCLONE_ENV_KEYS: &[&str] = &[
     "RCLONE_CONFIG",
     "RCLONE_CONFIG_PASS",
@@ -26,6 +31,13 @@ const RCLONE_ENV_KEYS: &[&str] = &[
     "RCLONE_DRIVE_SKIP_GDOCS",
     "RCLONE_DRIVE_USE_TRASH",
     "RCLONE_DRIVE_KEEP_REVISION_FOREVER",
+    "RCLONE_CRYPT_REMOTE",
+    "RCLONE_CRYPT_PASSWORD",
+    "RCLONE_CRYPT_PASSWORD2",
+    "RCLONE_CRYPT_FILENAME_ENCRYPTION",
+    "RCLONE_CRYPT_DIRECTORY_NAME_ENCRYPTION",
+    "RCLONE_CRYPT_NO_DATA_ENCRYPTION",
+    "RCLONE_CRYPT_STRICT_NAMES",
 ];
 
 #[derive(Debug, Clone)]
@@ -108,7 +120,26 @@ pub fn verify_google_drive(app: &AppHandle, token: &str) -> Result<(), String> {
     ensure_success("Google Drive connection check", &output)
 }
 
+pub fn list_raw_google_drive_files(
+    app: &AppHandle,
+    token: &str,
+    remote_path: &str,
+) -> Result<Vec<RemoteFileObservation>, String> {
+    list_google_drive_files_plain(app, token, remote_path)
+}
+
 pub fn list_google_drive_files(
+    app: &AppHandle,
+    token: &str,
+    remote_path: &str,
+) -> Result<Vec<RemoteFileObservation>, String> {
+    if let Some(context) = encryption::transport_context_for_remote_path(app, remote_path)? {
+        return list_encrypted_google_drive_files(app, token, &context);
+    }
+    list_google_drive_files_plain(app, token, remote_path)
+}
+
+fn list_google_drive_files_plain(
     app: &AppHandle,
     token: &str,
     remote_path: &str,
@@ -175,6 +206,16 @@ pub fn try_stat_google_drive_file(
     remote_file_path: &str,
     relative_path: &str,
 ) -> Result<Option<RemoteFileObservation>, String> {
+    if let Some(context) = encryption::transport_context_for_remote_path(app, remote_file_path)? {
+        return try_stat_encrypted_google_drive_file(
+            app,
+            token,
+            &context,
+            remote_file_path,
+            relative_path,
+        );
+    }
+
     let runtime = locate_runtime(app)?;
     let normalized = normalize_remote_path(remote_file_path)?;
     if normalized.is_empty() {
@@ -235,6 +276,17 @@ pub fn upload_google_drive_file(
     remote_file_path: &str,
     create_only: bool,
 ) -> Result<RemoteFileObservation, String> {
+    if let Some(context) = encryption::transport_context_for_remote_path(app, remote_file_path)? {
+        return upload_encrypted_google_drive_file(
+            app,
+            token,
+            &context,
+            local_path,
+            remote_file_path,
+            create_only,
+        );
+    }
+
     let (before_size, before_blake3) = scanner::fingerprint_file(local_path)?;
     let local_md5 = local_file_md5(app, local_path)?;
     let (after_hash_size, after_hash_blake3) = scanner::fingerprint_file(local_path)?;
@@ -314,6 +366,484 @@ pub fn upload_google_drive_file(
     // size and MD5 are visible remotely, accepting this observation is safer than
     // blindly retrying and risking a duplicate Google Drive object.
     Ok(remote)
+}
+
+pub fn download_google_drive_file_to_stage(
+    app: &AppHandle,
+    token: &str,
+    remote_file_path: &str,
+    destination: &Path,
+) -> Result<(), String> {
+    if destination.exists() {
+        return Err("Restore staging path already exists.".into());
+    }
+    let normalized = normalize_remote_path(remote_file_path)?;
+    if normalized.is_empty() {
+        return Err("Remote restore path cannot be empty.".into());
+    }
+    let runtime = locate_runtime(app)?;
+    let mut command =
+        if let Some(context) = encryption::transport_context_for_remote_path(app, &normalized)? {
+            let relative = encrypted_relative_path(&context, &normalized)?;
+            if relative.is_empty() {
+                return Err("Encrypted restore path cannot point to the workspace root.".into());
+            }
+            let mut command = crypt_command(&runtime, token, &context)?;
+            command
+                .arg("copyto")
+                .arg(format!(":crypt:{relative}"))
+                .arg(destination)
+                .args(["--immutable", "--retries", "1", "--stats", "0"]);
+            command
+        } else {
+            let mut command = drive_command(&runtime, token);
+            command
+                .arg("copyto")
+                .arg(format!(":drive:{normalized}"))
+                .arg(destination)
+                .args([
+                    "--checksum",
+                    "--immutable",
+                    "--retries",
+                    "1",
+                    "--stats",
+                    "0",
+                ]);
+            command
+        };
+    let output = command
+        .output()
+        .map_err(|error| format!("Could not start Google Drive restore download: {error}"))?;
+    ensure_success("Google Drive restore download", &output)
+}
+
+pub fn encrypted_namespace_exists(
+    app: &AppHandle,
+    token: &str,
+    context: &CryptTransportContext,
+) -> Result<bool, String> {
+    Ok(!raw_encrypted_namespace_items(app, token, context)?.is_empty())
+}
+
+pub fn write_encryption_sentinel(
+    app: &AppHandle,
+    token: &str,
+    context: &CryptTransportContext,
+) -> Result<(), String> {
+    if !raw_encrypted_namespace_items(app, token, context)?.is_empty() {
+        return Err(
+            "Encrypted namespace is not empty. AtrisBridge refuses to initialize a new key over existing remote data."
+                .into(),
+        );
+    }
+    let runtime = locate_runtime(app)?;
+    let mut command = crypt_command(&runtime, token, context)?;
+    command
+        .arg("rcat")
+        .arg(format!(":crypt:{ENCRYPTION_SENTINEL}"))
+        .args(["--retries", "1", "--stats", "0"]);
+    let output = run_with_stdin(
+        command,
+        ENCRYPTION_SENTINEL_CONTENT,
+        "encryption sentinel upload",
+    )?;
+    ensure_success("Encryption sentinel upload", &output)
+}
+
+pub fn verify_encryption_sentinel(
+    app: &AppHandle,
+    token: &str,
+    context: &CryptTransportContext,
+) -> Result<(), String> {
+    let runtime = locate_runtime(app)?;
+    let output = crypt_command(&runtime, token, context)?
+        .arg("cat")
+        .arg(format!(":crypt:{ENCRYPTION_SENTINEL}"))
+        .output()
+        .map_err(|error| format!("Could not read encrypted workspace sentinel: {error}"))?;
+    ensure_success("Encrypted workspace key verification", &output)?;
+    if output.stdout != ENCRYPTION_SENTINEL_CONTENT {
+        return Err(
+            "Recovery key did not decrypt the AtrisBridge workspace sentinel exactly.".into(),
+        );
+    }
+    Ok(())
+}
+
+fn list_encrypted_google_drive_files(
+    app: &AppHandle,
+    token: &str,
+    context: &CryptTransportContext,
+) -> Result<Vec<RemoteFileObservation>, String> {
+    // Verify the underlying namespace and sentinel first. Missing/corrupt ciphertext must never
+    // be interpreted as a clean empty remote inventory because that could create delete intent.
+    let raw_items = raw_encrypted_namespace_items(app, token, context)?;
+    let sentinel_raw = format!("{ENCRYPTION_SENTINEL}.bin");
+    let mut sentinel_seen = false;
+    let mut raw_by_logical = HashMap::new();
+    for item in raw_items {
+        let raw_path = normalize_remote_path(&item.path)?;
+        if raw_path == sentinel_raw {
+            sentinel_seen = true;
+            continue;
+        }
+        let logical_path = raw_path.strip_suffix(".bin").ok_or_else(|| {
+            format!("Encrypted namespace contains a non-crypt object at {raw_path}.")
+        })?;
+        let logical_path = normalize_remote_path(logical_path)?;
+        if raw_by_logical.insert(logical_path.clone(), item).is_some() {
+            return Err(format!("Duplicate ciphertext exists for {logical_path}."));
+        }
+    }
+    if !sentinel_seen {
+        return Err(
+            "Encrypted workspace sentinel is missing. AtrisBridge blocked remote reconciliation instead of treating the namespace as deleted."
+                .into(),
+        );
+    }
+
+    let runtime = locate_runtime(app)?;
+    let logical_output = crypt_command(&runtime, token, context)?
+        .args([
+            "lsjson",
+            ":crypt:",
+            "--recursive",
+            "--files-only",
+            "--no-mimetype",
+            "--fast-list",
+        ])
+        .output()
+        .map_err(|error| format!("Could not read encrypted Google Drive inventory: {error}"))?;
+    if logical_output.status.code() == Some(3) {
+        return Err("Encrypted namespace exists but could not be decrypted/listed. AtrisBridge blocked reconciliation.".into());
+    }
+    ensure_success("Encrypted Google Drive inventory", &logical_output)?;
+    let logical_items: Vec<RcloneListItem> = serde_json::from_slice(&logical_output.stdout)
+        .map_err(|error| {
+            format!("Encrypted Google Drive inventory response was invalid: {error}")
+        })?;
+
+    let mut seen_paths = HashSet::new();
+    let mut observations = Vec::new();
+    for logical in logical_items {
+        let relative_path = normalize_remote_path(&logical.path)?;
+        if relative_path == ENCRYPTION_SENTINEL {
+            continue;
+        }
+        if !seen_paths.insert(relative_path.clone()) {
+            return Err(format!(
+                "Encrypted Google Drive returned duplicate logical path {relative_path}."
+            ));
+        }
+        let raw = raw_by_logical.remove(&relative_path).ok_or_else(|| {
+            format!("Ciphertext evidence is missing for encrypted logical path {relative_path}.")
+        })?;
+        observations.push(encrypted_observation(logical, raw, relative_path)?);
+    }
+    if let Some(unmapped) = raw_by_logical.keys().next() {
+        return Err(format!(
+            "Ciphertext object {unmapped} could not be mapped to an authenticated logical file."
+        ));
+    }
+    Ok(observations)
+}
+
+fn try_stat_encrypted_google_drive_file(
+    app: &AppHandle,
+    token: &str,
+    context: &CryptTransportContext,
+    remote_file_path: &str,
+    relative_path: &str,
+) -> Result<Option<RemoteFileObservation>, String> {
+    let logical_relative = encrypted_relative_path(context, remote_file_path)?;
+    if logical_relative.is_empty() {
+        return Err("Encrypted file path cannot be the workspace root.".into());
+    }
+    let runtime = locate_runtime(app)?;
+    if try_stat_raw_ciphertext(&runtime, token, context, ENCRYPTION_SENTINEL)?.is_none() {
+        return Err(
+            "Encrypted workspace sentinel is missing during targeted preflight. AtrisBridge blocked deletion inference."
+      .into(),
+        );
+    }
+    let logical_target = format!(":crypt:{logical_relative}");
+    let logical_output = crypt_command(&runtime, token, context)?
+        .args(["lsjson", logical_target.as_str(), "--stat", "--no-mimetype"])
+        .output()
+        .map_err(|error| format!("Could not inspect encrypted Google Drive file: {error}"))?;
+    if matches!(logical_output.status.code(), Some(3) | Some(4)) {
+        let raw = try_stat_raw_ciphertext(&runtime, token, context, &logical_relative)?;
+        if raw.is_some() {
+            return Err(
+                "Ciphertext still exists for a logical path that crypt could not read. AtrisBridge blocked deletion inference."
+                    .into(),
+            );
+        }
+        return Ok(None);
+    }
+    ensure_success("Encrypted Google Drive file preflight", &logical_output)?;
+    let logical: RcloneListItem = serde_json::from_slice(&logical_output.stdout)
+        .map_err(|error| format!("Encrypted logical file response was invalid: {error}"))?;
+    let raw =
+        try_stat_raw_ciphertext(&runtime, token, context, &logical_relative)?.ok_or_else(|| {
+            "Encrypted logical file exists but its ciphertext object is missing.".to_string()
+        })?;
+    encrypted_observation(logical, raw, relative_path.to_string()).map(Some)
+}
+
+fn upload_encrypted_google_drive_file(
+    app: &AppHandle,
+    token: &str,
+    context: &CryptTransportContext,
+    local_path: &Path,
+    remote_file_path: &str,
+    create_only: bool,
+) -> Result<RemoteFileObservation, String> {
+    let (before_size, before_blake3) = scanner::fingerprint_file(local_path)?;
+    let logical_relative = encrypted_relative_path(context, remote_file_path)?;
+    if logical_relative.is_empty() {
+        return Err("Encrypted upload path cannot be the workspace root.".into());
+    }
+    if create_only
+        && try_stat_encrypted_google_drive_file(
+            app,
+            token,
+            context,
+            remote_file_path,
+            &logical_relative,
+        )?
+        .is_some()
+    {
+        return Err("Encrypted remote path appeared immediately before upload.".into());
+    }
+    let runtime = locate_runtime(app)?;
+    let mut command = crypt_command(&runtime, token, context)?;
+    command
+        .arg("copyto")
+        .arg(local_path)
+        .arg(format!(":crypt:{logical_relative}"))
+        .args(["--retries", "1", "--stats", "0"]);
+    if create_only {
+        command.arg("--immutable");
+    }
+    let output = command
+        .output()
+        .map_err(|error| format!("Could not start encrypted Google Drive upload: {error}"))?;
+    // Ciphertext uses a random nonce. On an ambiguous process failure AtrisBridge cannot
+    // reconstruct the expected ciphertext checksum locally, so fail closed instead of retrying.
+    ensure_success("Encrypted Google Drive upload", &output)?;
+    let (after_size, after_blake3) = scanner::fingerprint_file(local_path)?;
+    if before_size != after_size || before_blake3 != after_blake3 {
+        return Err("Local file changed while it was being encrypted/uploaded.".into());
+    }
+    let observation = try_stat_encrypted_google_drive_file(
+        app,
+        token,
+        context,
+        remote_file_path,
+        &logical_relative,
+    )?
+    .ok_or_else(|| "Encrypted upload succeeded but ciphertext evidence is missing.".to_string())?;
+    if observation.size != before_size
+        || observation.remote_id.is_none()
+        || observation.checksum_type.as_deref() != Some(CRYPT_CHECKSUM_TYPE)
+        || observation.checksum.is_none()
+    {
+        return Err("Encrypted upload completed without complete ciphertext evidence.".into());
+    }
+    Ok(observation)
+}
+
+fn encrypted_observation(
+    logical: RcloneListItem,
+    raw: RcloneListItem,
+    relative_path: String,
+) -> Result<RemoteFileObservation, String> {
+    let size = u64::try_from(logical.size)
+        .map_err(|_| format!("Encrypted file {relative_path} reported a negative size."))?;
+    let remote_id = raw.id.ok_or_else(|| {
+        format!("Google Drive did not provide a ciphertext ID for {relative_path}.")
+    })?;
+    let checksum = raw
+        .hashes
+        .iter()
+        .find_map(|(kind, value)| {
+            kind.eq_ignore_ascii_case("MD5")
+                .then(|| value.as_str().map(str::to_ascii_lowercase))
+                .flatten()
+        })
+        .ok_or_else(|| {
+            format!("Google Drive did not provide ciphertext MD5 for {relative_path}.")
+        })?;
+    if checksum.len() != 32
+        || !checksum
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    {
+        return Err(format!(
+            "Google Drive returned invalid ciphertext MD5 for {relative_path}."
+        ));
+    }
+    Ok(RemoteFileObservation {
+        relative_path,
+        remote_id: Some(remote_id),
+        size,
+        modified_at: logical.modified_at.or(raw.modified_at),
+        checksum_type: Some(CRYPT_CHECKSUM_TYPE.into()),
+        checksum: Some(checksum),
+    })
+}
+
+fn raw_encrypted_namespace_items(
+    app: &AppHandle,
+    token: &str,
+    context: &CryptTransportContext,
+) -> Result<Vec<RcloneListItem>, String> {
+    let runtime = locate_runtime(app)?;
+    let target = format!(":drive:{}", context.remote_namespace);
+    let output = drive_command(&runtime, token)
+        .args([
+            "lsjson",
+            target.as_str(),
+            "--recursive",
+            "--files-only",
+            "--hash",
+            "--hash-type",
+            "MD5",
+            "--no-mimetype",
+            "--fast-list",
+        ])
+        .output()
+        .map_err(|error| format!("Could not inspect encrypted remote namespace: {error}"))?;
+    if output.status.code() == Some(3) {
+        return Ok(Vec::new());
+    }
+    ensure_success("Encrypted remote namespace inspection", &output)?;
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("Encrypted remote namespace response was invalid: {error}"))
+}
+
+fn try_stat_raw_ciphertext(
+    runtime: &RcloneRuntime,
+    token: &str,
+    context: &CryptTransportContext,
+    logical_relative: &str,
+) -> Result<Option<RcloneListItem>, String> {
+    let raw_path = encrypted_underlying_path(context, logical_relative)?;
+    let raw_target = format!(":drive:{raw_path}");
+    let output = drive_command(runtime, token)
+        .args([
+            "lsjson",
+            raw_target.as_str(),
+            "--stat",
+            "--hash",
+            "--hash-type",
+            "MD5",
+            "--no-mimetype",
+        ])
+        .output()
+        .map_err(|error| format!("Could not inspect encrypted ciphertext evidence: {error}"))?;
+    if matches!(output.status.code(), Some(3) | Some(4)) {
+        return Ok(None);
+    }
+    ensure_success("Encrypted ciphertext preflight", &output)?;
+    serde_json::from_slice(&output.stdout)
+        .map(Some)
+        .map_err(|error| format!("Encrypted ciphertext response was invalid: {error}"))
+}
+
+fn encrypted_underlying_path(
+    context: &CryptTransportContext,
+    logical_relative: &str,
+) -> Result<String, String> {
+    let relative = normalize_remote_path(logical_relative)?;
+    if relative.is_empty() {
+        return Err("Encrypted file path cannot be empty.".into());
+    }
+    join_remote_path(&context.remote_namespace, &format!("{relative}.bin"))
+}
+
+fn encrypted_relative_path(
+    context: &CryptTransportContext,
+    requested_remote_path: &str,
+) -> Result<String, String> {
+    let requested = normalize_remote_path(requested_remote_path)?;
+    if requested == context.binding_root {
+        return Ok(String::new());
+    }
+    let prefix = format!("{}/", context.binding_root);
+    let relative = requested.strip_prefix(&prefix).ok_or_else(|| {
+        "Encrypted transport path is outside the workspace's pinned remote root.".to_string()
+    })?;
+    normalize_remote_path(relative)
+}
+
+fn crypt_command(
+    runtime: &RcloneRuntime,
+    token: &str,
+    context: &CryptTransportContext,
+) -> Result<Command, String> {
+    let password = obscure_secret(runtime, &context.password)?;
+    let password2 = obscure_secret(runtime, &context.password2)?;
+    let mut command = clean_command(&runtime.executable);
+    command
+        .arg("--config=")
+        .env("RCLONE_DRIVE_TOKEN", token)
+        .env("RCLONE_DRIVE_SCOPE", DRIVE_SCOPE)
+        .env("RCLONE_DRIVE_SKIP_GDOCS", "true")
+        .env("RCLONE_DRIVE_USE_TRASH", "true")
+        .env(
+            "RCLONE_CRYPT_REMOTE",
+            format!(":drive:{}", context.remote_namespace),
+        )
+        .env("RCLONE_CRYPT_PASSWORD", password)
+        .env("RCLONE_CRYPT_PASSWORD2", password2)
+        .env("RCLONE_CRYPT_FILENAME_ENCRYPTION", "off")
+        .env("RCLONE_CRYPT_DIRECTORY_NAME_ENCRYPTION", "false")
+        .env("RCLONE_CRYPT_NO_DATA_ENCRYPTION", "false")
+        .env("RCLONE_CRYPT_STRICT_NAMES", "true");
+    Ok(command)
+}
+
+fn obscure_secret(runtime: &RcloneRuntime, secret: &str) -> Result<String, String> {
+    let mut command = clean_command(&runtime.executable);
+    command
+        .args(["obscure", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output = run_with_stdin(command, secret.as_bytes(), "rclone secret obscuring")?;
+    ensure_success("rclone secret obscuring", &output)?;
+    let value = String::from_utf8(output.stdout)
+        .map_err(|_| "rclone returned non-UTF-8 obscured secret data.".to_string())?;
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Err("rclone returned an empty obscured secret.".into());
+    }
+    Ok(value)
+}
+
+fn run_with_stdin(mut command: Command, input: &[u8], action: &str) -> Result<Output, String> {
+    command.stdin(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Could not start {action}: {error}"))?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| format!("Could not open stdin for {action}."))?;
+    stdin
+        .write_all(input)
+        .map_err(|error| format!("Could not write stdin for {action}: {error}"))?;
+    if !input.ends_with(b"\n") {
+        stdin
+            .write_all(b"\n")
+            .map_err(|error| format!("Could not terminate stdin for {action}: {error}"))?;
+    }
+    drop(stdin);
+    child
+        .wait_with_output()
+        .map_err(|error| format!("Could not wait for {action}: {error}"))
 }
 
 pub fn join_remote_path(root: &str, relative_path: &str) -> Result<String, String> {
