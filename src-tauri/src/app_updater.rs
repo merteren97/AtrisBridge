@@ -131,7 +131,9 @@ pub async fn install_update(
         .lock()
         .map_err(|_| "The pending update state is unavailable.".to_string())?
         .take()
-        .ok_or_else(|| "There is no checked update ready to install. Check for updates again.".to_string())?;
+        .ok_or_else(|| {
+            "There is no checked update ready to install. Check for updates again.".to_string()
+        })?;
 
     let mut started = false;
     update
@@ -160,7 +162,9 @@ pub async fn install_update(
             },
         )
         .await
-        .map_err(|error| format!("Could not download or install the AtrisBridge update: {error}"))?;
+        .map_err(|error| {
+            format!("Could not download or install the AtrisBridge update: {error}")
+        })?;
 
     app.restart();
 }
@@ -181,6 +185,9 @@ mod tests {
 
     #[test]
     fn update_channel_is_bounded() {
-        assert!(matches!(updater_channel(), "preview" | "stable" | "development"));
+        assert!(matches!(
+            updater_channel(),
+            "preview" | "stable" | "development"
+        ));
     }
 }
