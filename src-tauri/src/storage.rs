@@ -429,8 +429,8 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("state");
-        let summary = journal_summary_with_connection(&connection, "workspace-1")
-            .expect("journal summary");
+        let summary =
+            journal_summary_with_connection(&connection, "workspace-1").expect("journal summary");
 
         assert_eq!(state, "local_only");
         assert_eq!(summary.present_files, 1);
@@ -496,12 +496,8 @@ mod tests {
             )
             .expect("mark synced");
 
-        record_scan_with_connection(
-            &mut connection,
-            &report("2026-08-11T06:03:00Z", 0),
-            &[],
-        )
-        .expect("missing scan");
+        record_scan_with_connection(&mut connection, &report("2026-08-11T06:03:00Z", 0), &[])
+            .expect("missing scan");
 
         let (state, tombstone, local_present): (String, i64, i64) = connection
             .query_row(
@@ -528,12 +524,8 @@ mod tests {
             &[file("hash-a")],
         )
         .expect("first scan");
-        record_scan_with_connection(
-            &mut connection,
-            &report("2026-08-11T06:04:00Z", 0),
-            &[],
-        )
-        .expect("missing scan");
+        record_scan_with_connection(&mut connection, &report("2026-08-11T06:04:00Z", 0), &[])
+            .expect("missing scan");
 
         let (state, tombstone): (String, i64) = connection
             .query_row(
