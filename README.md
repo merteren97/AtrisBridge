@@ -1,145 +1,172 @@
+<div align="center">
+
 # AtrisBridge
 
-AtrisBridge is a local-first desktop application for keeping engineering and software project workspaces portable, inspectable, and ready for safe synchronization across machines.
+### Local-first project synchronization for engineering workspaces.
 
-> **Status:** early alpha (`0.1.0-alpha.9`). Local inventory, durable SQLite state, restricted Google Drive transport, guarded backup/restore, conflict-aware two-way synchronization, OS-backed credential persistence, optional client-side content encryption, conservative continuous watch, remembered AtrisHub desktop sessions, system-tray runtime, global sync activity, signed updates, and Windows/Linux release packaging are implemented.
+Keep active software and engineering projects portable across computers without relying on ZIP archives, blind folder mirroring, or last-write-wins synchronization.
 
-[Türkçe README](README_TR.md)
+**Local-first · Conflict-aware · Recovery-focused**
 
-## Why AtrisBridge?
+[Türkçe](README_TR.md) · [Architecture](docs/architecture.md) · [Security](docs/security.md) · [Contributing](CONTRIBUTING.md)
 
-Moving active projects between development machines often turns into manual ZIP archives, ad-hoc cloud folders, stale copies, and uncertainty about which version is current. AtrisBridge puts a conservative synchronization layer between a local project and a storage provider:
+</div>
 
-- local-first workspace metadata and scanning,
-- durable SQLite file state across restarts,
-- BLAKE3 local fingerprints,
-- explicit local / remote / synchronized-baseline evidence,
-- conflict-aware two-way plans instead of last-write-wins,
-- recoverable deletion propagation,
-- OS-native secure credential storage,
-- optional client-side content encryption,
-- continuous reconciliation that treats filesystem events as hints rather than synchronization truth,
-- a tray-resident desktop runtime for unattended watch mode,
-- provider-independent architecture with Google Drive as the first transport.
+> **Early alpha — `0.1.0-alpha.9`**  
+> AtrisBridge is under active development. The core synchronization engine, Google Drive transport, continuous watch, desktop runtime, optional encryption, AtrisHub account integration, updater, and Windows/Linux release foundation are implemented, but the product should still be treated as pre-stable software.
 
-## What works today
+## What is AtrisBridge?
 
-Phase 0 through Phase 9 currently provide:
+AtrisBridge is a desktop application for keeping active project folders synchronized between computers while keeping synchronization decisions explicit and inspectable.
 
-- Tauri 2 + React + TypeScript desktop shell,
-- local workspace management and native directory picker,
-- Rust scanner with BLAKE3 fingerprints,
-- built-in exclusions for generated output, Git metadata, IDE caches, `.env*`, common private-key/certificate formats, and AtrisBridge recovery artifacts,
-- optional `.atrisbridgeignore`,
-- SQLite state under the OS application-data directory,
-- persistent local and remote inventory evidence,
-- pinned rclone `v1.74.4` runtime validation,
-- Google Drive OAuth using `drive.file`,
-- OAuth credentials persisted only through the operating-system credential vault,
-- workspace-to-Drive-folder bindings,
-- guarded local → Drive backup,
-- explicit Drive → local restore with staging and rollback,
-- conflict-aware reviewed two-way synchronization,
-- exact-ID Google Drive Trash for reviewed deletion propagation,
-- app-data recovery copies before reviewed local deletion propagation,
-- explicit recovery-copy restore,
-- optional per-workspace client-side **content encryption** using the restricted crypt transport,
-- `AB1-...` recovery-key export/import for encrypted workspaces,
-- native per-workspace filesystem watch with event debounce/coalescing,
-- bounded provider reconciliation for remote-side changes,
-- optional automatic application of **safe transfer-only** plans,
-- automatic fail-closed handoff to manual review for conflicts, blocked paths, scanner uncertainty, or every deletion action,
-- backend ownership guards that prevent manual mutating IPC from racing an active watch loop,
-- remembered AtrisHub desktop account sessions with refresh credentials held only in the OS vault,
-- system tray with explicit open/hide/quit lifecycle,
-- close-to-tray behavior so configured watchers can keep running,
-- global Activity Center for active cycles, queued operations, conflicts, and per-workspace watcher state,
-- opt-in desktop alerts with in-app fallback,
-- signed Tauri updater with preview/stable channel support,
-- owner-controlled Windows x64 and Linux x64 package/release workflows,
-- reproducible npm/Cargo lockfiles and CI validation.
+It is built for project folders that are more important than a simple cloud copy: source code, automation projects, engineering workspaces, configuration-heavy repositories, test assets, and other work where overwriting the wrong version can be costly.
 
-Removing a workspace removes AtrisBridge coordination metadata and never deletes project files. Recovery keys are deliberately not automatically destroyed from the OS credential vault when workspace metadata is removed; silent key destruction could make remote ciphertext unrecoverable.
+Instead of asking only "which file is newer?", AtrisBridge compares:
 
-## Synchronization safety
+1. the current local state,
+2. the current remote state,
+3. the last synchronized baseline accepted by both sides.
 
-AtrisBridge never uses modification time as conflict authority and does not run background last-write-wins synchronization.
+That lets it distinguish a normal transfer from a real conflict, protect destructive operations, and avoid silently replacing a newer copy with an older one.
 
-For two-way synchronization:
+## Why it exists
 
-- local changed / remote unchanged → upload,
-- local unchanged / remote changed → download,
-- both changed → conflict,
-- local deleted / remote unchanged → exact reviewed Drive object moves to Trash,
-- remote deleted / local unchanged → verified local recovery copy, then reviewed local deletion,
-- delete/modify overlap → conflict,
-- both absent after a shared baseline → converged deletion acknowledgement.
+Moving a project between machines often turns into the same fragile routine: create a ZIP, upload it, remember which copy is current, merge folders manually, and hope nothing important is overwritten or omitted.
 
-Provider and filesystem state are refreshed before execution and journal completion remains evidence-locked.
+AtrisBridge replaces that routine with a controlled synchronization layer built around durable state, reviewed plans, and recoverable execution.
 
-## Continuous watch and desktop runtime
+### Product principles
 
-Continuous watch mode reduces repeated manual scanning without bypassing AtrisBridge's planner/executor.
+**Local-first** — Workspace state and synchronization decisions live on the desktop. AtrisHub sign-in is optional for the core local workflow.
 
-- native filesystem events are only **dirty signals**,
-- local bursts settle behind a debounce/coalescing window,
-- every cycle performs a full scanner pass and fresh provider observation,
-- bounded Drive reconciliation detects changes made by another machine while local files are quiet,
-- only one automatic cycle may own a workspace at a time,
-- `Auto-apply safe transfers` is a separate opt-in and defaults off,
-- conflicts, blocked paths, incomplete scanner evidence, encryption/provider uncertainty, and every deletion action fail closed,
-- watch mode **never automatically applies deletion actions**,
-- manual mutating commands are rejected by the Rust IPC boundary while watch mode owns the workspace.
+**Conflict-aware** — Concurrent edits are surfaced as conflicts instead of being resolved with last-write-wins behavior.
 
-On desktop, closing the main window hides AtrisBridge to the system tray instead of stopping configured watchers. The tray exposes explicit Open, Hide, and Quit actions. The Activity Center observes the same durable journal/runtime state and does not create a second synchronization authority or bypass review gates.
+**Safe around deletion** — Deletion is treated as a destructive operation with additional review and recovery safeguards. Continuous watch never automatically applies deletions.
 
-See [docs/continuous-watch.md](docs/continuous-watch.md) and [docs/desktop-runtime.md](docs/desktop-runtime.md).
+**Inspectable** — Observation, planning, and execution are separate. Uncertain or destructive situations are surfaced instead of hidden.
 
-## Secure credentials and AtrisHub account
+**Provider-independent architecture** — Google Drive is the first supported remote provider, with the transport layer designed for future providers.
 
-Provider credentials, encryption secrets, and remembered AtrisHub refresh credentials stay out of React, SQLite, `.env`, synchronized workspaces, and repository files whenever they are secret material. OS-backed secure storage is used for persisted credentials.
+## Core capabilities
 
-AtrisHub sign-in remains optional: local AtrisBridge workflows continue to function without an account. Remembered sessions use rotating refresh credentials, while short-lived access credentials remain process-local.
+### Project workspaces
 
-See [docs/security.md](docs/security.md) and [docs/atrishub-account.md](docs/atrishub-account.md).
+- Manage multiple local workspaces from one desktop application.
+- Scan files in Rust and fingerprint content with BLAKE3.
+- Persist synchronization evidence and history in SQLite.
+- Use `.atrisbridgeignore` for project-specific exclusions.
+- Keep generated output and other common non-project artifacts out of normal synchronization flows.
 
-## Optional client-side encryption
+### Conflict-aware synchronization
 
-Client-side encryption is opt-in per workspace and is only attached before an accepted synchronized baseline exists and while the managed remote root is empty. AtrisBridge deliberately does not perform an in-place plaintext-to-ciphertext migration.
+- Upload local-only changes.
+- Download remote-only changes.
+- Detect simultaneous local and remote edits as conflicts.
+- Review destructive actions before execution.
+- Create local recovery copies before reviewed local deletion.
+- Move reviewed Google Drive deletions to Trash instead of performing broad path-based deletion.
 
-Regular file contents are encrypted locally before Drive receives them. The first encrypted transport intentionally leaves filename encryption disabled, so **file contents are encrypted while filenames and directory structure remain visible to the storage provider**. Missing/corrupt encrypted namespace or key-verification evidence is treated as unsafe provider state and fails closed.
+### Continuous watch
 
-## Release and updater
+- Observe configured workspaces with native filesystem events.
+- Debounce and coalesce rapid change bursts.
+- Re-scan and re-observe the provider before each synchronization decision.
+- Detect remote-side changes even when local files are quiet.
+- Optionally auto-apply safe transfer-only plans.
+- Hand conflicts, uncertainty, and every deletion back to manual review.
 
-The release foundation packages Windows x64 NSIS/MSI and Linux x64 AppImage/DEB artifacts. rclone is pinned and SHA-256 verified before packaging rather than committed as a binary. The Tauri updater uses signed updater artifacts and AtrisHub channel policy while package bytes remain on GitHub Releases.
+### Desktop experience
 
-See [docs/release-updater.md](docs/release-updater.md).
+- System tray with **Open**, **Hide**, and **Quit** actions.
+- Close-to-tray behavior so configured watchers can continue running.
+- Global Activity Center for active cycles, queued work, conflicts, and workspace status.
+- In-app alerts with optional desktop notifications.
+- Signed application updater with preview/stable channel support.
 
-## Roadmap
+### Security and privacy
 
-1. **Phase 0/1 — foundation and local inventory** ✅
-2. **Phase 2 — SQLite sync journal and durable file state** ✅
-3. **Phase 3 — restricted rclone transport + Google Drive observation** ✅
-4. **Phase 4 — safe incremental backup** ✅
-5. **Phase 5 — safe pull and restore** ✅
-6. **Phase 6 — conflict-aware two-way synchronization** ✅
-7. **Phase 7 — persistent secure credential storage + optional client-side content encryption** ✅
-8. **Phase 8 — continuous watch mode + conservative scheduler** ✅
-9. **Phase 9 — tray lifecycle, activity/progress UX, alerts, AtrisHub desktop session, signed Windows/Linux release foundation** ✅
-10. **Phase 10+ — additional storage providers, broader platform packaging, and later product integrations**
+- Sensitive persisted data uses operating-system-backed secure storage where appropriate.
+- AtrisHub sign-in is optional; local workflows continue without an account.
+- Optional per-workspace client-side content encryption is available before files are sent to the provider.
+- Encrypted workspaces support an exportable recovery key.
+- Built-in safety exclusions reduce the chance of synchronizing common local-only or sensitive artifacts.
 
-Architecture and subsystem details live under [`docs/`](docs/architecture.md).
+> Current encrypted transport protects file contents. Filenames and directory structure remain visible to the storage provider.
+
+## How it works
+
+```mermaid
+flowchart LR
+    A[Local Workspace] --> B[Rust Scanner + BLAKE3]
+    D[Remote Provider] --> C[Remote Observation]
+    B --> E[Sync Planner]
+    C --> E
+    F[SQLite Baseline + Journal] --> E
+    E --> G{Plan}
+    G -->|Safe transfer| H[Executor]
+    G -->|Conflict / deletion / uncertainty| I[Manual Review]
+    I --> H
+    H --> A
+    H --> D
+    H --> F
+```
+
+A simplified decision model:
+
+| Local | Remote | Decision |
+| --- | --- | --- |
+| Changed | Unchanged | Upload |
+| Unchanged | Changed | Download |
+| Changed | Changed | Conflict |
+| Deleted | Unchanged | Reviewed remote Trash action |
+| Unchanged | Deleted | Recovery copy, then reviewed local deletion |
+| Deleted | Changed | Conflict |
+| Changed | Deleted | Conflict |
+
+AtrisBridge refreshes filesystem and provider evidence before execution so an approved plan does not silently operate against stale observations.
+
+## Google Drive
+
+Google Drive is the first supported provider. AtrisBridge uses a restricted rclone-based transport and explicit workspace-to-folder bindings instead of unrestricted cloud mirroring.
+
+The packaged rclone runtime is pinned to `v1.74.4` and verified during preparation/release rather than being committed to the repository as an opaque binary.
+
+See [docs/rclone-transport.md](docs/rclone-transport.md).
+
+## Platforms
+
+Current release packaging targets:
+
+| Platform | Architecture | Packages | Status |
+| --- | --- | --- | --- |
+| Windows | x64 | NSIS, MSI | Implemented |
+| Linux | x64 | AppImage, DEB | Implemented |
+| macOS | — | — | Planned |
+
+Release creation is owner-controlled through GitHub Actions. See [docs/release-updater.md](docs/release-updater.md).
+
+## Technology
+
+- **Desktop:** Tauri 2
+- **Frontend:** React 19 + TypeScript + Vite
+- **Native core:** Rust
+- **Local state:** SQLite
+- **Fingerprinting:** BLAKE3
+- **Remote transport:** restricted rclone integration
+- **First provider:** Google Drive
+
+See [docs/architecture.md](docs/architecture.md) for the subsystem design.
 
 ## Development
 
-Requirements:
+### Requirements
 
 - Node.js LTS
 - npm
 - Rust stable
-- Tauri 2 platform prerequisites for your OS
+- Tauri 2 prerequisites for your operating system
 
-Prepare the pinned rclone development sidecar:
+### Run locally
 
 ```bash
 npm install
@@ -147,7 +174,7 @@ npm run sidecar:prepare
 npm run tauri:dev
 ```
 
-Validation:
+### Validate
 
 ```bash
 npm run build
@@ -159,7 +186,7 @@ cargo check --locked --manifest-path src-tauri/Cargo.toml
 
 ## `.atrisbridgeignore`
 
-AtrisBridge supports gitignore-compatible project rules in `.atrisbridgeignore` at the workspace root. Built-in safety exclusions remain active even when the custom file is absent.
+Add `.atrisbridgeignore` to a workspace root for project-specific exclusions. Rules are gitignore-compatible, while built-in safety exclusions remain active independently.
 
 ```gitignore
 artifacts/
@@ -168,12 +195,46 @@ customer-dumps/
 *.bak
 ```
 
-## Security and project policy
+## Project status
 
-AtrisBridge can reduce accidental leakage and destructive synchronization, but it cannot grant permission to upload proprietary or customer-controlled code to third-party infrastructure. Always follow the policy, DLP, contractual, data-residency, export-control, and authorization requirements that apply to the project being synchronized.
+The first product foundation is complete through Phase 9:
+
+- ✅ Local workspace inventory and durable state
+- ✅ Google Drive observation and restricted transport
+- ✅ Guarded backup and staged restore
+- ✅ Conflict-aware two-way synchronization
+- ✅ Secure persistence and optional content encryption
+- ✅ Continuous watch and conservative scheduler
+- ✅ Tray runtime, Activity Center, alerts, AtrisHub desktop sessions
+- ✅ Signed updater and Windows/Linux release foundation
+- ⏳ Additional storage providers
+- ⏳ Broader platform packaging
+- ⏳ Future Atris ecosystem integrations
+
+AtrisBridge remains alpha software. Compatibility, migration behavior, provider coverage, and production hardening will continue to evolve.
+
+## Documentation
+
+- [Architecture](docs/architecture.md)
+- [Synchronization engine](docs/sync-engine.md)
+- [Backup engine](docs/backup-engine.md)
+- [Restore engine](docs/restore-engine.md)
+- [Continuous watch](docs/continuous-watch.md)
+- [Desktop runtime](docs/desktop-runtime.md)
+- [Security model](docs/security.md)
+- [AtrisHub account integration](docs/atrishub-account.md)
+- [Release and updater](docs/release-updater.md)
+
+## Security and responsible use
+
+AtrisBridge can reduce accidental leakage and destructive synchronization risk, but it does not grant permission to upload proprietary, regulated, customer-controlled, or company-controlled data to third-party infrastructure. Always follow the policies and authorization requirements that apply to the project being synchronized.
 
 Do not report security vulnerabilities in public issues. See [SECURITY.md](SECURITY.md).
 
+## Contributing
+
+Contributions and technical discussion are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
+
 ## License
 
-Licensed under the [Apache License 2.0](LICENSE).
+AtrisBridge is open source under the [Apache License 2.0](LICENSE).
