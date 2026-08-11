@@ -400,9 +400,9 @@ export default function App() {
           <div className="cloud-card-header">
             <div className="cloud-title">
               <span className="cloud-icon"><CloudCog size={19} /></span>
-              <div><p className="eyebrow">Phase 4 transport</p><h2>Google Drive</h2></div>
+              <div><p className="eyebrow">{selected?.syncMode === "two_way" ? "Phase 6 guarded transport" : "Phase 4/5 guarded transport"}</p><h2>Google Drive</h2></div>
             </div>
-            <span className="read-only-pill"><ShieldCheck size={12} /> Guarded backup</span>
+            <span className="read-only-pill"><ShieldCheck size={12} /> {selected?.syncMode === "two_way" ? "Reviewed two-way" : "Guarded transfer"}</span>
           </div>
 
           <div className="cloud-grid">
@@ -458,7 +458,7 @@ export default function App() {
                 <Link2 size={16} />
                 <div>
                   <strong>{selected.name} remote folder</strong>
-                  <span>Binding selects the dedicated backup root; it never grants delete or download behavior.</span>
+                  <span>Binding selects a dedicated AtrisBridge-managed root. Transfer and deletion behavior still requires an explicit reviewed plan.</span>
                 </div>
               </div>
               <div className="remote-binding-controls">
@@ -508,7 +508,7 @@ export default function App() {
           )}
 
           <p className="cloud-security-note">
-            <ShieldCheck size={13} /> OAuth tokens stay in process memory only. Phase 4 uploads only files approved by a fresh evidence plan; remote deletes and downloads remain unavailable.
+            <ShieldCheck size={13} /> OAuth tokens stay in process memory only. {selected?.syncMode === "two_way" ? "Phase 6 enables reviewed uploads/downloads and recoverable deletion convergence; permanent Drive deletion and automatic conflict resolution remain unavailable." : "Backup and restore remain explicit reviewed flows; permanent remote deletion remains unavailable."}
           </p>
         </section>
 
@@ -537,7 +537,17 @@ export default function App() {
             </div>
 
             <div className="workspace-meta-grid">
-              <div><small>Mode</small><strong>Backup</strong><span>Guarded local → cloud writes only.</span></div>
+              <div>
+        <small>Mode</small>
+        <strong>{selected.syncMode === "two_way" ? "Two-Way" : selected.syncMode === "pull" ? "Pull" : "Backup"}</strong>
+        <span>
+          {selected.syncMode === "two_way"
+            ? "Conflict-aware local ↔ Drive plans with recoverable deletion propagation."
+            : selected.syncMode === "pull"
+              ? "Explicit cloud → local restore mode."
+              : "Guarded local → cloud writes only."}
+        </span>
+      </div>
               <div><small>Last scan</small><strong>{formatDate(journal?.lastScanAt ?? report?.scannedAt ?? selected.lastScanAt)}</strong><span>BLAKE3 local inventory</span></div>
               <div><small>Journal</small><strong>{journal?.presentFiles.toLocaleString() ?? "—"}</strong><span>{journal?.changedFiles ?? 0} changed · SQLite state</span></div>
               <div><small>Safety queue</small><strong>{journal?.tombstones ?? 0} tombstones</strong><span>{journal?.conflicts ?? 0} conflicts · {journal?.pendingOperations ?? 0} queued</span></div>

@@ -181,3 +181,74 @@ export interface RestoreExecutionReport {
   restoredBytes: number;
   finishedAt: string;
 }
+
+export type SyncPlanStatus = TransferPlanStatus;
+export type SyncPlanItemAction =
+  | "upload_create"
+  | "upload_update"
+  | "download_create"
+  | "download_update"
+  | "remote_trash"
+  | "local_delete"
+  | "acknowledge_delete"
+  | "conflict"
+  | "blocked";
+export type SyncPlanItemStatus =
+  | "ready"
+  | "running"
+  | "applying"
+  | "completed"
+  | "failed"
+  | "conflict"
+  | "blocked"
+  | "cancelled";
+
+export interface SyncPlanItem {
+  id: string;
+  relativePath: string;
+  action: SyncPlanItemAction;
+  status: SyncPlanItemStatus;
+  size: number | null;
+  reason: string | null;
+  lastError: string | null;
+}
+
+export interface SyncPlan {
+  id: string;
+  workspaceId: string;
+  providerId: string;
+  remotePath: string;
+  status: SyncPlanStatus;
+  createdAt: string;
+  localScanAt: string;
+  remoteInventoryAt: string;
+  uploadCount: number;
+  downloadCount: number;
+  deleteCount: number;
+  conflictCount: number;
+  blockedCount: number;
+  transferBytes: number;
+  completedCount: number;
+  failedCount: number;
+  completedAt: string | null;
+  previewTruncated: boolean;
+  items: SyncPlanItem[];
+}
+
+export interface SyncExecutionReport {
+  planId: string;
+  status: SyncPlanStatus;
+  completedCount: number;
+  failedCount: number;
+  transferredBytes: number;
+  finishedAt: string;
+}
+
+export interface SyncRecoveryEntry {
+  id: string;
+  workspaceId: string;
+  relativePath: string;
+  size: number;
+  createdAt: string;
+  restoredAt: string | null;
+}

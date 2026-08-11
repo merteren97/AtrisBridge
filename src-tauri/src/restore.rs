@@ -158,6 +158,13 @@ pub async fn prepare_restore_plan(
     id: String,
     sessions: State<'_, ProviderSessionStore>,
 ) -> Result<RestorePlan, String> {
+    let workspace = find_workspace(&app, &id)?;
+    if matches!(workspace.sync_mode, crate::models::SyncMode::TwoWay) {
+        return Err(
+            "One-way restore planning is disabled while this workspace is in Two-Way mode. Use Prepare sync instead."
+  .into(),
+        );
+    }
     let (provider, binding) = provider_storage::get_provider_for_workspace(&app, &id)?;
     if provider.provider_type != "google_drive" {
         return Err("Phase 5 currently supports Google Drive restore only.".into());
@@ -181,6 +188,13 @@ pub async fn execute_restore_plan(
     sessions: State<'_, ProviderSessionStore>,
 ) -> Result<RestoreExecutionReport, String> {
     let context = execution_context(&app, &plan_id)?;
+    let workspace = find_workspace(&app, &context.workspace_id)?;
+    if matches!(workspace.sync_mode, crate::models::SyncMode::TwoWay) {
+        return Err(
+            "One-way restore execution is disabled while this workspace is in Two-Way mode. Prepare a fresh two-way plan instead."
+      .into(),
+        );
+    }
     ensure_managed_restore_root(&context.remote_path)?;
     let token = sessions
         .google_drive_token(&context.provider_id)?

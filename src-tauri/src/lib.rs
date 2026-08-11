@@ -8,6 +8,8 @@ mod provider_storage;
 mod restore;
 mod scanner;
 mod storage;
+mod sync;
+mod sync_recovery;
 mod transport;
 
 use provider_sessions::ProviderSessionStore;
@@ -21,6 +23,7 @@ pub fn run() {
             backup_recovery::recover_interrupted_plans(app.handle())
                 .map_err(std::io::Error::other)?;
             restore::recover_interrupted_restores(app.handle()).map_err(std::io::Error::other)?;
+            sync::recover_interrupted_syncs(app.handle()).map_err(std::io::Error::other)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -45,6 +48,12 @@ pub fn run() {
             restore::latest_restore_plan,
             restore::prepare_restore_plan,
             restore::execute_restore_plan,
+            sync::set_workspace_sync_mode,
+            sync::latest_sync_plan,
+            sync::prepare_sync_plan,
+            sync::execute_sync_plan,
+            sync_recovery::list_sync_recoveries,
+            sync_recovery::restore_sync_recovery,
         ])
         .run(tauri::generate_context!())
         .expect("error while running AtrisBridge");

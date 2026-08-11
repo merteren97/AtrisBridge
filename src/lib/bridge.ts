@@ -9,6 +9,10 @@ import type {
   RestoreExecutionReport,
   RestorePlan,
   ScanReport,
+  SyncExecutionReport,
+  SyncMode,
+  SyncPlan,
+  SyncRecoveryEntry,
   Workspace,
   WorkspaceRemoteBinding,
 } from "../types";
@@ -23,6 +27,10 @@ export async function addWorkspace(name: string, path: string): Promise<Workspac
 
 export async function removeWorkspace(id: string): Promise<void> {
   return invoke("remove_workspace", { id });
+}
+
+export async function setWorkspaceSyncMode(id: string, mode: SyncMode): Promise<Workspace> {
+  return invoke<Workspace>("set_workspace_sync_mode", { id, mode });
 }
 
 export async function scanWorkspace(id: string): Promise<ScanReport> {
@@ -99,4 +107,24 @@ export async function prepareRestorePlan(id: string): Promise<RestorePlan> {
 
 export async function executeRestorePlan(planId: string): Promise<RestoreExecutionReport> {
   return invoke<RestoreExecutionReport>("execute_restore_plan", { planId });
+}
+
+export async function getLatestSyncPlan(id: string): Promise<SyncPlan | null> {
+  return invoke<SyncPlan | null>("latest_sync_plan", { id });
+}
+
+export async function prepareSyncPlan(id: string): Promise<SyncPlan> {
+  return invoke<SyncPlan>("prepare_sync_plan", { id });
+}
+
+export async function executeSyncPlan(planId: string): Promise<SyncExecutionReport> {
+  return invoke<SyncExecutionReport>("execute_sync_plan", { planId });
+}
+
+export async function listSyncRecoveries(id: string): Promise<SyncRecoveryEntry[]> {
+  return invoke<SyncRecoveryEntry[]>("list_sync_recoveries", { id });
+}
+
+export async function restoreSyncRecovery(recoveryId: string): Promise<SyncRecoveryEntry> {
+  return invoke<SyncRecoveryEntry>("restore_sync_recovery", { recoveryId });
 }

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  ArrowLeftRight,
   ArrowUpFromLine,
   CheckCircle2,
   FileWarning,
@@ -12,8 +13,10 @@ import {
   executeBackupPlan,
   getLatestBackupPlan,
   prepareBackupPlan,
+  setWorkspaceSyncMode,
 } from "./lib/bridge";
 import RestorePanel from "./RestorePanel";
+import SyncPanel from "./SyncPanel";
 import type { BackupPlan, Workspace } from "./types";
 
 interface BackupPanelProps {
@@ -61,12 +64,12 @@ export default function BackupPanel({
   onError,
 }: BackupPanelProps) {
   const [plan, setPlan] = useState<BackupPlan | null>(null);
-  const [busy, setBusy] = useState<"load" | "prepare" | "execute" | null>(null);
+  const [busy, setBusy] = useState<"load" | "prepare" | "execute" | "mode" | null>(null);
   const [restoreBusy, setRestoreBusy] = useState(false);
 
   useEffect(() => {
-    void loadLatest();
-  }, [workspace.id]);
+    if (workspace.syncMode !== "two_way") void loadLatest();
+  }, [workspace.id, workspace.syncMode]);
 
   async function loadLatest() {
     try {
@@ -112,6 +115,33 @@ export default function BackupPanel({
     }
   }
 
+  async function handleEnableTwoWay() {
+    const confirmed = window.confirm(
+      "Enable conflict-aware Two-Way mode for this workspace?\n\nNothing synchronizes immediately. AtrisBridge will require a fresh Prepare sync → review → Run sync flow. Local/remote changes are compared against synchronized baselines and conflicts remain blocked.",
+    );
+    if (!confirmed) return;
+    try {
+      setBusy("mode");
+      await setWorkspaceSyncMode(workspace.id, "two_way");
+      await onChanged();
+    } catch (error) {
+      onError(String(error));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  if (workspace.syncMode === "two_way") {
+    return (
+      <SyncPanel
+        workspace={workspace}
+        ready={ready}
+        onChanged={onChanged}
+        onError={onError}
+      />
+    );
+  }
+
   const running = busy !== null || restoreBusy;
   const visibleItems = plan?.items.slice(0, 8) ?? [];
 
@@ -132,8 +162,21 @@ export default function BackupPanel({
           <div className="backup-plan-actions">
             <button
               className="secondary-button"
-              onClick={handlePrepare}
+              onClick={handleEnableTwoWay}
               disabled={!ready || running}
+              title="Switch this workspace to conflict-aware two-way synchronization"
+            >
+              {busy === "mode" ? (
+                <RefreshCw className="spin" size={14} />
+              ) : (
+                <ArrowLeftRight size={14} />
+              )}
+              Two-Way mode
+            </button>
+            <button
+              className="secondary-button"
+              onClick={handlePrepare}
+              disabled={!ready || running || workspace.syncMode !== "backup"}
             >
               {busy === "prepare" ? (
                 <RefreshCw className="spin" size={14} />
@@ -148,6 +191,7 @@ export default function BackupPanel({
               disabled={
                 !ready ||
                 running ||
+                workspace.syncMode !== "backup" ||
                 plan?.status !== "ready" ||
                 plan.uploadCount === 0
               }
@@ -241,8 +285,8 @@ export default function BackupPanel({
 
         <div className="backup-safety-strip">
           <ShieldCheck size={13} />
-          Phase 4 is local → Drive only. No remote delete, move, purge, bisync, or generic rclone
-          command is exposed.
+          Backup mode remains local → Drive only. Enable Two-Way mode explicitly to plan downloads,
+          recoverable deletion propagation, and conflict-aware convergence.
         </div>
       </section>
 

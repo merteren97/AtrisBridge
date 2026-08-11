@@ -245,6 +245,13 @@ pub async fn execute_backup_plan(
     sessions: State<'_, ProviderSessionStore>,
 ) -> Result<BackupExecutionReport, String> {
     let context = backup::execution_context(&app, &plan_id)?;
+    let workspace = find_workspace(&app, &context.workspace_id)?;
+    if !matches!(workspace.sync_mode, SyncMode::Backup) {
+        return Err(
+            "Backup plan execution is disabled while this workspace is not in Backup mode. Prepare a fresh plan after changing mode."
+      .into(),
+        );
+    }
     ensure_managed_backup_root(&context.remote_path)?;
     let token = sessions
         .google_drive_token(&context.provider_id)?
