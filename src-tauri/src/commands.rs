@@ -10,8 +10,7 @@ use crate::{
         SyncMode, Workspace, WorkspaceRemoteBinding,
     },
     provider_sessions::ProviderSessionStore,
-    provider_storage,
-    scanner,
+    provider_storage, scanner,
     storage::{
         delete_workspace, find_workspace, get_journal_summary, insert_workspace,
         list_journal_summaries, load_workspaces, record_scan,
@@ -203,9 +202,9 @@ pub async fn scan_remote_inventory(
     if provider.provider_type != "google_drive" {
         return Err("This provider is not supported by the current transport adapter.".into());
     }
-    let token = sessions
-        .google_drive_token(&provider.id)?
-        .ok_or_else(|| "Google Drive session is not active. Reconnect before scanning remote files.".to_string())?;
+    let token = sessions.google_drive_token(&provider.id)?.ok_or_else(|| {
+        "Google Drive session is not active. Reconnect before scanning remote files.".to_string()
+    })?;
 
     let inventory_app = app.clone();
     let inventory_path = binding.remote_path.clone();
