@@ -1,4 +1,5 @@
 mod app_updater;
+mod atris_auth;
 mod backup;
 mod backup_recovery;
 mod commands;
@@ -17,6 +18,7 @@ mod sync;
 mod sync_recovery;
 mod transport;
 
+use atris_auth::AtrisHubAuthState;
 use continuous::ContinuousSyncManager;
 use provider_sessions::ProviderSessionStore;
 
@@ -25,6 +27,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(ProviderSessionStore::default())
         .manage(ContinuousSyncManager::default())
+        .manage(AtrisHubAuthState::default())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             app_updater::setup(app)?;
@@ -39,6 +42,10 @@ pub fn run() {
             app_updater::get_update_runtime_info,
             app_updater::check_for_updates,
             app_updater::install_update,
+            atris_auth::atrishub_auth_status,
+            atris_auth::login_atrishub,
+            atris_auth::restore_atrishub_session,
+            atris_auth::logout_atrishub,
             commands::list_workspaces,
             commands::add_workspace,
             continuous_commands::guarded_remove_workspace,

@@ -1,6 +1,6 @@
 [package]
 name = "atrisbridge"
-version = "0.1.0-alpha.8"
+version = "0.1.0-alpha.9"
 description = "Local-first project synchronization for developers and engineering teams."
 authors = ["AtrisHub"]
 edition = "2021"
