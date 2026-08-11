@@ -1,3 +1,4 @@
+mod app_updater;
 mod backup;
 mod backup_recovery;
 mod commands;
@@ -26,6 +27,7 @@ pub fn run() {
         .manage(ContinuousSyncManager::default())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            app_updater::setup(app)?;
             backup_recovery::recover_interrupted_plans(app.handle())
                 .map_err(std::io::Error::other)?;
             restore::recover_interrupted_restores(app.handle()).map_err(std::io::Error::other)?;
@@ -34,6 +36,9 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            app_updater::get_update_runtime_info,
+            app_updater::check_for_updates,
+            app_updater::install_update,
             commands::list_workspaces,
             commands::add_workspace,
             continuous_commands::guarded_remove_workspace,
