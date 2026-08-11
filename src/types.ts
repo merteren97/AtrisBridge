@@ -76,9 +76,24 @@ export interface RemoteInventoryReport {
   totalBytes: number;
 }
 
-export type BackupPlanStatus = "ready" | "running" | "completed" | "partial" | "failed" | "cancelled";
-export type BackupPlanItemAction = "create" | "update" | "blocked";
-export type BackupPlanItemStatus = "ready" | "running" | "completed" | "failed" | "blocked" | "cancelled";
+export type TransferPlanStatus =
+  | "ready"
+  | "running"
+  | "completed"
+  | "partial"
+  | "failed"
+  | "cancelled";
+
+export type TransferPlanItemAction = "create" | "update" | "blocked";
+export type BackupPlanStatus = TransferPlanStatus;
+export type BackupPlanItemAction = TransferPlanItemAction;
+export type BackupPlanItemStatus =
+  | "ready"
+  | "running"
+  | "completed"
+  | "failed"
+  | "blocked"
+  | "cancelled";
 
 export interface BackupPlanItem {
   id: string;
@@ -115,5 +130,54 @@ export interface BackupExecutionReport {
   completedCount: number;
   failedCount: number;
   uploadedBytes: number;
+  finishedAt: string;
+}
+
+export type RestorePlanStatus = TransferPlanStatus;
+export type RestorePlanItemAction = TransferPlanItemAction;
+export type RestorePlanItemStatus =
+  | "ready"
+  | "running"
+  | "applying"
+  | "completed"
+  | "failed"
+  | "blocked"
+  | "cancelled";
+
+export interface RestorePlanItem {
+  id: string;
+  relativePath: string;
+  action: RestorePlanItemAction;
+  status: RestorePlanItemStatus;
+  size: number | null;
+  blockReason: string | null;
+  lastError: string | null;
+}
+
+export interface RestorePlan {
+  id: string;
+  workspaceId: string;
+  providerId: string;
+  remotePath: string;
+  status: RestorePlanStatus;
+  createdAt: string;
+  localScanAt: string;
+  remoteInventoryAt: string;
+  restoreCount: number;
+  restoreBytes: number;
+  blockedCount: number;
+  completedCount: number;
+  failedCount: number;
+  completedAt: string | null;
+  previewTruncated: boolean;
+  items: RestorePlanItem[];
+}
+
+export interface RestoreExecutionReport {
+  planId: string;
+  status: RestorePlanStatus;
+  completedCount: number;
+  failedCount: number;
+  restoredBytes: number;
   finishedAt: string;
 }

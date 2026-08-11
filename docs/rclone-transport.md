@@ -1,6 +1,6 @@
 # rclone transport boundary
 
-AtrisBridge uses rclone as a narrow provider transport adapter. rclone is **not** the synchronization authority: AtrisBridge owns workspace policy, BLAKE3 inventory, durable state, planning, conflict decisions, and baseline acceptance.
+AtrisBridge uses rclone as a narrow provider transport adapter. rclone is **not** the synchronization authority: AtrisBridge owns workspace policy, BLAKE3 inventory, durable state, planning, conflict decisions, restore rollback, and baseline acceptance.
 
 ## Runtime resolution
 
@@ -21,15 +21,16 @@ The token is not written to SQLite, `rclone.conf`, `.env` files, repository file
 
 rclone is launched directly with `std::process::Command`; there is no shell interpolation. AtrisBridge removes inherited rclone credential/config environment variables before every invocation and supplies the session token only to the child process.
 
-There is no frontend command that accepts arbitrary rclone arguments. The Phase 4 adapter exposes only dedicated functions for:
+There is no frontend command that accepts arbitrary rclone arguments. The Phase 4/5 adapters expose only dedicated operations for:
 
-- `rclone version`
-- `rclone authorize drive`
-- `rclone config userinfo`
-- `rclone about`
-- `rclone lsjson` for inventory and targeted stat
-- local `rclone hashsum MD5` for upload evidence
-- single-file `rclone copyto` for an approved backup item
+- `rclone version`,
+- `rclone authorize drive`,
+- `rclone config userinfo`,
+- `rclone about`,
+- `rclone lsjson` for inventory and targeted stat,
+- local `rclone hashsum MD5` for transfer evidence,
+- single-file `rclone copyto` for an approved backup item,
+- single-file `rclone copyto` from Drive into an AtrisBridge-owned local staging path for an approved restore item.
 
 `sync`, `bisync`, `delete`, `purge`, `move`, `mount`, `serve`, remote control, and generic command execution remain unavailable.
 
@@ -40,6 +41,8 @@ The adapter queries the workspace's bound Google Drive folder directly instead o
 Google Drive checksums are recorded separately from local BLAKE3 fingerprints. They are different evidence types and are never directly compared as if they used the same algorithm.
 
 Duplicate relative paths returned by Google Drive are treated as unsafe. AtrisBridge blocks planning instead of automatically running a destructive deduplication command.
+
+Native Google Docs are skipped by the Drive adapter. Phase 4 and Phase 5 operate on regular file content with provider checksum evidence.
 
 ## Phase 4 write boundary
 
@@ -60,10 +63,32 @@ New-file operations also perform a targeted existence check immediately before t
 
 A transport process can report an error after the provider has already accepted a file. In that case AtrisBridge does not blindly retry: if the exact remote size and MD5 match the local evidence, the verified remote observation can be accepted for that operation. This reduces duplicate-object risk on Google Drive.
 
-## Concurrency limitation
+## Phase 5 restore boundary
 
-The Phase 4 rclone adapter does not claim atomic compare-and-swap semantics for updates to an existing Drive object. There remains a small provider-side race window between the final targeted preflight and the write. AtrisBridge mitigates it with fresh inventories, remote ID/checksum comparison, a targeted stat, a single transfer attempt, and post-upload content verification. A future direct provider adapter can use provider-native conditional writes if an appropriate precondition is available.
+Phase 5 never gives rclone the final project-file destination. `copyto` can replace an existing destination, so every approved Drive → local transfer targets a unique hidden sibling staging file first.
+
+For each approved restore AtrisBridge:
+
+1. performs a targeted Drive stat and requires the planned remote ID, size, and MD5,
+2. resolves the local path without following symbolic links,
+3. creates a unique `.atrisbridge-<operation>.part` destination that must not already exist,
+4. runs a single-file `copyto` from Drive to that staging path with retries limited to one and `--immutable`,
+5. computes staging BLAKE3 and MD5,
+6. requires staging size + MD5 to match the planned remote evidence,
+7. performs another targeted Drive stat,
+8. revalidates the local target,
+9. only then allows the restore engine to perform a recoverable filesystem rename.
+
+rclone never decides whether a local file is safe to replace and never performs the final replacement itself. The restore engine owns that policy and retains a `.bak` recovery copy for verified updates until the SQLite baseline commit succeeds.
+
+## Concurrency limitations
+
+The rclone backup adapter does not claim atomic compare-and-swap semantics for updates to an existing Drive object. There remains a small provider-side race window between the final targeted preflight and the write. AtrisBridge mitigates it with fresh inventories, remote ID/checksum comparison, targeted stat, a single transfer attempt, and post-upload content verification.
+
+Restore similarly cannot lock a Drive object against another client changing it after the final targeted stat. AtrisBridge verifies the downloaded snapshot before local apply; if the provider changes immediately afterward, a later remote inventory will observe a new remote divergence instead of silently deleting local content. A future direct provider adapter can use provider-native conditional requests where suitable.
 
 ## No deletion semantics
 
-Phase 4 never maps a missing local file to a remote delete. Remote-only files, local tombstones, unverified overlaps, and conflicts are preserved as evidence and are not modified by the backup executor.
+Phase 4 never maps a missing local file to a remote delete. Phase 5 never maps a missing remote file to a local delete.
+
+Remote-only/local-only files, tombstones, unverified overlaps, and conflicts are preserved as evidence. Any future deletion behavior must be an explicit, recoverable feature rather than an implicit side effect of transport.

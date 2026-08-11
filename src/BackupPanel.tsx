@@ -13,6 +13,7 @@ import {
   getLatestBackupPlan,
   prepareBackupPlan,
 } from "./lib/bridge";
+import RestorePanel from "./RestorePanel";
 import type { BackupPlan, Workspace } from "./types";
 
 interface BackupPanelProps {
@@ -61,6 +62,7 @@ export default function BackupPanel({
 }: BackupPanelProps) {
   const [plan, setPlan] = useState<BackupPlan | null>(null);
   const [busy, setBusy] = useState<"load" | "prepare" | "execute" | null>(null);
+  const [restoreBusy, setRestoreBusy] = useState(false);
 
   useEffect(() => {
     void loadLatest();
@@ -110,116 +112,148 @@ export default function BackupPanel({
     }
   }
 
-  const running = busy !== null;
+  const running = busy !== null || restoreBusy;
   const visibleItems = plan?.items.slice(0, 8) ?? [];
 
   return (
-    <section className="backup-plan-card">
-      <div className="backup-plan-header">
-        <div>
-          <div className="backup-plan-title">
-            <ListChecks size={17} />
-            <strong>Safe backup plan</strong>
-          </div>
-          <p>
-            Prepare creates a fresh local + remote evidence snapshot. Uploads only run after a separate review step.
-          </p>
-        </div>
-        <div className="backup-plan-actions">
-          <button
-            className="secondary-button"
-            onClick={handlePrepare}
-            disabled={!ready || running}
-          >
-            {busy === "prepare" ? <RefreshCw className="spin" size={14} /> : <ListChecks size={14} />}
-            Prepare plan
-          </button>
-          <button
-            className="primary-button"
-            onClick={handleExecute}
-            disabled={!ready || running || plan?.status !== "ready" || plan.uploadCount === 0}
-          >
-            {busy === "execute" ? <RefreshCw className="spin" size={14} /> : <ArrowUpFromLine size={14} />}
-            Run backup
-          </button>
-        </div>
-      </div>
-
-      {!ready ? (
-        <div className="backup-plan-empty">
-          <ShieldAlert size={18} />
+    <>
+      <section className="backup-plan-card">
+        <div className="backup-plan-header">
           <div>
-            <strong>Provider preconditions are not ready</strong>
-            <span>Connect Google Drive and bind a dedicated workspace folder first.</span>
+            <div className="backup-plan-title">
+              <ListChecks size={17} />
+              <strong>Safe backup plan</strong>
+            </div>
+            <p>
+              Prepare creates a fresh local + remote evidence snapshot. Uploads only run after a
+              separate review step.
+            </p>
           </div>
-        </div>
-      ) : !plan ? (
-        <div className="backup-plan-empty">
-          <ShieldCheck size={18} />
-          <div>
-            <strong>No backup plan prepared</strong>
-            <span>Preparing a plan refreshes both inventories; it does not upload anything.</span>
-          </div>
-        </div>
-      ) : (
-        <>
-          <div className="backup-plan-metrics">
-            <div>
-              <small>Status</small>
-              <strong>{statusLabel(plan)}</strong>
-              <span>{formatDate(plan.createdAt)}</span>
-            </div>
-            <div>
-              <small>Safe uploads</small>
-              <strong>{plan.uploadCount.toLocaleString()}</strong>
-              <span>{formatBytes(plan.uploadBytes)}</span>
-            </div>
-            <div className={plan.blockedCount > 0 ? "blocked" : undefined}>
-              <small>Blocked</small>
-              <strong>{plan.blockedCount.toLocaleString()}</strong>
-              <span>Never overwritten automatically</span>
-            </div>
-            <div>
-              <small>Completed</small>
-              <strong>{plan.completedCount.toLocaleString()}</strong>
-              <span>{plan.failedCount.toLocaleString()} failed</span>
-            </div>
-          </div>
-
-          {visibleItems.length > 0 && (
-            <div className="backup-plan-items">
-              {visibleItems.map((item) => (
-                <div key={item.id} className={`backup-plan-item ${item.action}`}>
-                  <span className="backup-plan-item-icon">
-                    {item.action === "blocked" ? (
-                      <FileWarning size={14} />
-                    ) : item.status === "completed" ? (
-                      <CheckCircle2 size={14} />
-                    ) : (
-                      <ArrowUpFromLine size={14} />
-                    )}
-                  </span>
-                  <div>
-                    <strong>{item.relativePath}</strong>
-                    <span>
-                      {item.lastError ?? item.blockReason ?? `${item.action} · ${item.size === null ? "unknown size" : formatBytes(item.size)}`}
-                    </span>
-                  </div>
-                  <small>{item.status}</small>
-                </div>
-              ))}
-              {(plan.previewTruncated || plan.items.length > visibleItems.length) && (
-                <p className="backup-plan-note">Showing the first safety-relevant plan entries.</p>
+          <div className="backup-plan-actions">
+            <button
+              className="secondary-button"
+              onClick={handlePrepare}
+              disabled={!ready || running}
+            >
+              {busy === "prepare" ? (
+                <RefreshCw className="spin" size={14} />
+              ) : (
+                <ListChecks size={14} />
               )}
-            </div>
-          )}
-        </>
-      )}
+              Prepare plan
+            </button>
+            <button
+              className="primary-button"
+              onClick={handleExecute}
+              disabled={
+                !ready ||
+                running ||
+                plan?.status !== "ready" ||
+                plan.uploadCount === 0
+              }
+            >
+              {busy === "execute" ? (
+                <RefreshCw className="spin" size={14} />
+              ) : (
+                <ArrowUpFromLine size={14} />
+              )}
+              Run backup
+            </button>
+          </div>
+        </div>
 
-      <div className="backup-safety-strip">
-        <ShieldCheck size={13} />
-        Phase 4 is local → Drive only. No download, remote delete, move, purge, bisync, or generic rclone command is exposed.
-      </div>
-    </section>
+        {!ready ? (
+          <div className="backup-plan-empty">
+            <ShieldAlert size={18} />
+            <div>
+              <strong>Provider preconditions are not ready</strong>
+              <span>Connect Google Drive and bind a dedicated workspace folder first.</span>
+            </div>
+          </div>
+        ) : !plan ? (
+          <div className="backup-plan-empty">
+            <ShieldCheck size={18} />
+            <div>
+              <strong>No backup plan prepared</strong>
+              <span>Preparing a plan refreshes both inventories; it does not upload anything.</span>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="backup-plan-metrics">
+              <div>
+                <small>Status</small>
+                <strong>{statusLabel(plan)}</strong>
+                <span>{formatDate(plan.createdAt)}</span>
+              </div>
+              <div>
+                <small>Safe uploads</small>
+                <strong>{plan.uploadCount.toLocaleString()}</strong>
+                <span>{formatBytes(plan.uploadBytes)}</span>
+              </div>
+              <div className={plan.blockedCount > 0 ? "blocked" : undefined}>
+                <small>Blocked</small>
+                <strong>{plan.blockedCount.toLocaleString()}</strong>
+                <span>Never overwritten automatically</span>
+              </div>
+              <div>
+                <small>Completed</small>
+                <strong>{plan.completedCount.toLocaleString()}</strong>
+                <span>{plan.failedCount.toLocaleString()} failed</span>
+              </div>
+            </div>
+
+            {visibleItems.length > 0 && (
+              <div className="backup-plan-items">
+                {visibleItems.map((item) => (
+                  <div key={item.id} className={`backup-plan-item ${item.action}`}>
+                    <span className="backup-plan-item-icon">
+                      {item.action === "blocked" ? (
+                        <FileWarning size={14} />
+                      ) : item.status === "completed" ? (
+                        <CheckCircle2 size={14} />
+                      ) : (
+                        <ArrowUpFromLine size={14} />
+                      )}
+                    </span>
+                    <div>
+                      <strong>{item.relativePath}</strong>
+                      <span>
+                        {item.lastError ??
+                          item.blockReason ??
+                          `${item.action} · ${
+                            item.size === null ? "unknown size" : formatBytes(item.size)
+                          }`}
+                      </span>
+                    </div>
+                    <small>{item.status}</small>
+                  </div>
+                ))}
+                {(plan.previewTruncated || plan.items.length > visibleItems.length) && (
+                  <p className="backup-plan-note">
+                    Showing the first safety-relevant plan entries.
+                  </p>
+                )}
+              </div>
+            )}
+          </>
+        )}
+
+        <div className="backup-safety-strip">
+          <ShieldCheck size={13} />
+          Phase 4 is local → Drive only. No remote delete, move, purge, bisync, or generic rclone
+          command is exposed.
+        </div>
+      </section>
+
+      <RestorePanel
+        workspace={workspace}
+        ready={ready}
+        disabled={busy !== null}
+        onBusyChange={setRestoreBusy}
+        onChanged={onChanged}
+        onError={onError}
+      />
+    </>
   );
 }

@@ -94,6 +94,27 @@ pub fn fingerprint_file(path: &Path) -> Result<(u64, String), String> {
     Ok((metadata.len(), digest))
 }
 
+pub fn is_path_ignored_for_sync(root: &Path, relative_path: &str) -> Result<bool, String> {
+    let relative = Path::new(relative_path);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err("Sync candidate contains an unsafe relative path.".into());
+    }
+    if is_builtin_ignored(relative, false) {
+        return Ok(true);
+    }
+
+    let matcher = build_custom_ignore(root)?;
+    Ok(is_custom_ignored(
+        &root.join(relative),
+        false,
+        matcher.as_ref(),
+    ))
+}
+
 fn build_custom_ignore(root: &Path) -> Result<Option<Gitignore>, String> {
     let ignore_path = root.join(".atrisbridgeignore");
     if !ignore_path.exists() {
@@ -311,7 +332,9 @@ coverage/
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{fs, path::PathBuf};
+
+    use uuid::Uuid;
 
     use super::*;
 
@@ -329,5 +352,24 @@ mod tests {
         ));
         assert!(is_builtin_ignored(Path::new(".env.local"), false));
         assert!(!is_builtin_ignored(Path::new("src/main.rs"), false));
+    }
+
+    #[test]
+    fn restore_candidates_reuse_builtin_and_custom_ignore_rules() {
+        let root =
+            std::env::temp_dir().join(format!("atrisbridge-ignore-policy-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("temp root");
+        fs::write(root.join(".atrisbridgeignore"), "private/\n*.generated\n").expect("ignore file");
+
+        assert!(is_path_ignored_for_sync(&root, ".env.production").expect("built-in env"));
+        assert!(
+            is_path_ignored_for_sync(&root, "node_modules/package/index.js")
+                .expect("built-in directory")
+        );
+        assert!(is_path_ignored_for_sync(&root, "private/customer.txt").expect("custom directory"));
+        assert!(is_path_ignored_for_sync(&root, "cache/data.generated").expect("custom extension"));
+        assert!(!is_path_ignored_for_sync(&root, "src/main.rs").expect("allowed source"));
+
+        fs::remove_dir_all(root).expect("cleanup temp root");
     }
 }

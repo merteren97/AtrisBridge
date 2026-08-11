@@ -6,6 +6,8 @@ import type {
   ProviderConnection,
   RcloneStatus,
   RemoteInventoryReport,
+  RestoreExecutionReport,
+  RestorePlan,
   ScanReport,
   Workspace,
   WorkspaceRemoteBinding,
@@ -85,4 +87,16 @@ export async function prepareBackupPlan(id: string): Promise<BackupPlan> {
 
 export async function executeBackupPlan(planId: string): Promise<BackupExecutionReport> {
   return invoke<BackupExecutionReport>("execute_backup_plan", { planId });
+}
+
+export async function getLatestRestorePlan(id: string): Promise<RestorePlan | null> {
+  return invoke<RestorePlan | null>("latest_restore_plan", { id });
+}
+
+export async function prepareRestorePlan(id: string): Promise<RestorePlan> {
+  return invoke<RestorePlan>("prepare_restore_plan", { id });
+}
+
+export async function executeRestorePlan(planId: string): Promise<RestoreExecutionReport> {
+  return invoke<RestoreExecutionReport>("execute_restore_plan", { planId });
 }
