@@ -146,7 +146,9 @@ pub fn list_google_drive_files(
             let (checksum_type, checksum) = item
                 .hashes
                 .iter()
-                .find_map(|(kind, value)| value.as_str().map(|hash| (kind.clone(), hash.to_string())))
+                .find_map(|(kind, value)| {
+                    value.as_str().map(|hash| (kind.clone(), hash.to_string()))
+                })
                 .map(|(kind, hash)| (Some(kind), Some(hash)))
                 .unwrap_or((None, None));
 
