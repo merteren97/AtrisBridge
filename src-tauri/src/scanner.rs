@@ -26,6 +26,7 @@ const BUILTIN_DIRECTORY_IGNORES: &[&str] = &[
     "coverage",
 ];
 const BUILTIN_SECRET_EXTENSIONS: &[&str] = &["pem", "key", "pfx", "p12"];
+const BUILTIN_RESERVED_FILE_NAMES: &[&str] = &[".atrisbridge-key-check"];
 
 pub struct ScanOutcome {
     pub report: ScanReport,
@@ -251,6 +252,16 @@ fn is_custom_ignored(path: &Path, is_dir: bool, matcher: Option<&Gitignore>) -> 
 }
 
 fn is_builtin_ignored(relative: &Path, is_dir: bool) -> bool {
+    if !is_dir {
+        if let Some(name) = relative.file_name().and_then(|value| value.to_str()) {
+            if BUILTIN_RESERVED_FILE_NAMES
+                .iter()
+                .any(|reserved| name.eq_ignore_ascii_case(reserved))
+            {
+                return true;
+            }
+        }
+    }
     if relative
         .components()
         .filter_map(|component| component.as_os_str().to_str())

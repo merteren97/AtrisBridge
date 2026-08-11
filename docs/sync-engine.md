@@ -1,180 +1,139 @@
 # Sync Engine Design
 
-AtrisBridge owns synchronization semantics. Provider transports supply observations and narrowly approved mutations; they do not decide which copy wins.
+AtrisBridge synchronization is evidence-first and review-first. Phase 7 adds secure credential persistence and optional encrypted transport without changing the conflict authority introduced in Phase 6.
 
 ## Evidence model
 
-Every synchronization decision is based on three evidence classes kept separately in SQLite:
+Every synchronized path is evaluated from three independent snapshots:
 
-1. **Current local observation** — presence, size, modification metadata, BLAKE3.
-2. **Current remote observation** — presence, provider object ID, size, provider checksum type/value.
-3. **Last successfully synchronized baseline** — local BLAKE3 plus remote provider checksum evidence accepted only after a verified transfer.
+1. **current local observation**,
+2. **current remote observation**,
+3. **last successfully accepted synchronized baseline**.
 
-Modification time is useful metadata but is never sufficient conflict authority.
+Modification time is never used as the winner rule.
 
-The local scanner applies built-in secret/generated exclusions, `.atrisbridgeignore`, and no-symlink traversal. AtrisBridge transfer/recovery `.part` and `.bak` artifacts are also excluded so recovery mechanics cannot become project content accidentally.
+Local content uses BLAKE3 + size. Plain Drive content uses provider ID + size + MD5. Encrypted Drive content uses logical plaintext size together with the underlying ciphertext Drive ID + ciphertext MD5 under checksum type `RCLONE_CRYPT_MD5`.
+
+The journal never compares local BLAKE3 and provider MD5 as if they were equivalent hashes.
+
+## Local scanner
+
+The scanner validates the workspace root, applies built-in exclusions and `.atrisbridgeignore`, refuses symlink traversal, hashes regular files with BLAKE3, and persists the full inventory while returning only a bounded UI preview.
+
+Built-in exclusions include generated folders, Git/IDE metadata, `.env*`, common private-key/certificate formats, AtrisBridge `.part`/`.bak` recovery artifacts, and the reserved encryption sentinel name `.atrisbridge-key-check`.
+
+Unreadable entries are surfaced rather than interpreted as deletions.
 
 ## Durable journal
 
-The core `file_entries` row keeps local, remote, and baseline evidence for each relative path. Phase-specific plan tables are additive:
+SQLite stores non-secret coordination state under OS application data. Relevant state includes:
 
-- `backup_plans` / backup items — Phase 4 local → Drive,
-- `restore_plans` / restore items — Phase 5 Drive → local,
-- `sync_plans` / `sync_plan_items` — Phase 6 conflict-aware two-way plans,
-- `sync_recovery_entries` — verified recovery copies retained after a Phase 6 remote-deletion → local-delete operation.
+- workspaces and sync mode,
+- local/remote scan history,
+- file observations,
+- last synchronized baselines,
+- backup/restore/two-way plans and item evidence,
+- tombstones/conflicts,
+- recovery metadata,
+- non-secret workspace-encryption metadata.
 
-Phase 6 plan items persist the exact evidence reviewed at planning time: local presence/hash/size, remote presence/ID/size/checksum, baseline local hash, baseline remote checksum, action, state, errors, and any local recovery evidence required around an apply operation.
+OAuth JSON and encryption recovery keys are never stored in SQLite.
 
-## Two-Way mode is explicit
+## Two-way decision matrix
 
-A workspace must be switched explicitly to `two_way`. Changing the mode performs no synchronization.
+With a complete shared baseline:
 
-The user flow is always:
+- local changed / remote unchanged → upload update,
+- local unchanged / remote changed → download update,
+- both changed → conflict,
+- local deleted / remote unchanged → remote Trash,
+- local deleted / remote changed → conflict,
+- remote deleted / local unchanged → recoverable local delete,
+- remote deleted / local changed → conflict,
+- both absent → acknowledge converged deletion.
 
-1. **Prepare sync** — refresh local inventory and remote inventory, classify every path, persist a plan, mutate nothing.
-2. **Review** — inspect uploads, downloads, deletion convergence, conflicts, and blocks.
-3. **Run sync** — refresh both inventories again, require plan evidence to remain unchanged, and execute only items that are still safe.
+Without an accepted baseline, overlapping local+remote paths are blocked rather than guessed. Local-only or remote-only content can be created on the missing side when complete evidence exists.
 
-A running backup, restore, or another two-way operation blocks a concurrent two-way execution for that workspace.
+## Encrypted provider evidence
 
-## Phase 6 decision table
+Phase 7 preserves the same decision matrix for encrypted workspaces. The only difference is the provider evidence representation.
 
-| Local current state | Remote current state | Baseline | Decision |
-| --- | --- | --- | --- |
-| present | absent | none | `upload_create` |
-| absent | present with stable ID/size/MD5 | none | `download_create` |
-| present | present | none | `blocked` — unverified overlap |
-| unchanged | unchanged | verified | skip |
-| changed | unchanged | verified | `upload_update` |
-| unchanged | changed | verified | `download_update` |
-| changed | changed | verified | `conflict` |
-| deleted | unchanged | verified | `remote_trash` |
-| deleted | changed | verified | `conflict` — delete/modify |
-| unchanged | deleted | verified | `local_delete` |
-| changed | deleted | verified | `conflict` — delete/modify |
-| deleted | deleted | verified | `acknowledge_delete` |
+A valid encrypted remote observation requires:
 
-An incomplete historical baseline is blocked rather than silently upgraded into authority. Case-insensitive path collisions, unsafe/non-portable paths, symlink traversal, ignored paths, and missing provider evidence are also blocked.
+- a logical path that decrypts/lists successfully,
+- logical plaintext size,
+- exactly one mapped underlying ciphertext Drive object,
+- ciphertext Drive file ID,
+- valid ciphertext MD5 (`RCLONE_CRYPT_MD5`),
+- a valid encrypted-workspace sentinel/key state.
 
-## Upload and download execution
+If crypt cannot map or authenticate the namespace, remote reconciliation aborts. A wrong key, missing sentinel, or corrupted ciphertext must never appear as a set of remote deletions.
 
-Phase 6 reuses the verified Phase 4/5 transfer patterns.
+## Planning and execution order
 
-### Upload
+All transfer modes follow the same high-level sequence:
 
-For an approved local change AtrisBridge:
+1. refresh local evidence,
+2. refresh remote evidence,
+3. create/persist a reviewable plan,
+4. user reviews safe/conflict/blocked items,
+5. execution refreshes local and remote evidence again,
+6. each item is revalidated immediately before mutation,
+7. transfer/apply is staged or recoverable where applicable,
+8. provider/local postflight evidence is checked,
+9. synchronized baseline is committed only through conditional SQL matching the planned evidence.
 
-1. requires the current SQLite evidence to equal the reviewed plan evidence,
-2. resolves a regular local file without escaping the workspace,
-3. recomputes local BLAKE3 + size,
-4. for create, verifies the remote path is still absent; for update, verifies remote ID/size/checksum,
-5. performs a single restricted upload,
-6. verifies the local file did not change during transfer,
-7. requires provider size/checksum evidence for the resulting object,
-8. commits a new synchronized baseline only if the current journal row still equals the exact planned evidence.
+Backup, restore, and two-way execution are mutually exclusive per workspace through backend mode/plan checks.
 
-### Download
+## Upload behavior
 
-For an approved remote change AtrisBridge:
+Plain and encrypted uploads both require stable local BLAKE3 + size before/after transfer.
 
-1. requires current journal evidence to equal the plan,
-2. performs targeted Drive preflight,
-3. downloads to a unique hidden sibling `.part` path,
-4. verifies staging size + MD5 against the reviewed Drive evidence and stores local BLAKE3,
-5. performs final remote stat and local target validation,
-6. persists an `applying` recovery state,
-7. creates a `.bak` for an update before replacing the target,
-8. fingerprints the applied target,
-9. commits the new baseline only against the exact planned journal evidence,
-10. removes temporary recovery content only after the journal commit succeeds.
+For plaintext Drive, accepted remote evidence is provider ID + size + MD5. For encrypted Drive, accepted evidence is logical size + ciphertext provider ID + ciphertext MD5.
 
-Interrupted apply states are recovered conservatively at application startup; uncertain content is preserved for manual inspection.
+An ambiguous encrypted upload process failure is fail-closed because randomized ciphertext means AtrisBridge cannot safely reconstruct the exact provider ciphertext checksum from plaintext after the fact.
 
-## Deletion convergence
+## Download behavior
 
-Deletion propagation is deliberately stricter than content transfer.
+Downloads never target an existing project file directly. Data first lands in an AtrisBridge-owned staging path.
 
-### Local deletion → Google Drive Trash
+Plain downloads require local staging size + MD5 to match reviewed Drive evidence. Encrypted downloads require the ciphertext ID/checksum to remain stable through targeted provider stat while rclone crypt authenticates/decrypts into the local stage; AtrisBridge then fingerprints the plaintext stage with BLAKE3 before recoverable apply.
 
-A local deletion can propagate only when:
+Existing local targets use `.bak` recovery until SQLite completion succeeds.
 
-- the path had a complete synchronized baseline,
-- the current Drive object still has the reviewed ID, size, and MD5,
-- the local path is still physically absent during live preflight immediately before the provider mutation.
+## Deletion behavior
 
-AtrisBridge then moves the **exact reviewed Google Drive file ID** to Trash using a narrow Drive API request. Permanent deletion is not exposed.
+A missing observation is not automatically deletion authority.
 
-After the request, the managed remote path is checked again. If another object now occupies the same path, the operation does not treat that new object as the deleted object or clear uncertain evidence. A fresh reviewed plan is required.
+Local → remote deletion:
 
-Trash is a recoverable provider action, but AtrisBridge does not claim an atomic provider compare-and-swap between its checksum preflight and the Trash request. Another Drive client can still change the same object in that interval.
+- local path must remain absent,
+- remote provider evidence must still equal baseline,
+- exact reviewed Drive file ID is moved to Trash,
+- path is checked again after Trash,
+- uncertain replacement/race state does not converge the baseline.
 
-### Remote deletion → recoverable local delete
+Remote → local deletion:
 
-A remote deletion can remove a local file only when:
+- remote path is repeatedly checked absent,
+- local BLAKE3 + size must still equal baseline,
+- an app-data recovery copy is written, fingerprinted, and flushed,
+- applying state is persisted,
+- local evidence/remote absence are rechecked,
+- only then can the local file be removed and deletion convergence committed.
 
-- the local BLAKE3 + size still equal the synchronized baseline,
-- targeted Drive checks continue to prove the remote path is absent,
-- the path remains safe and is not ignored.
+For encrypted workspaces, the exact reviewed remote ID is the ciphertext Drive object ID.
 
-Before local removal AtrisBridge:
+## Encryption enable/import rules
 
-1. copies the local file into its OS application-data recovery area,
-2. verifies recovery BLAKE3 + size,
-3. flushes that recovery file,
-4. checks remote absence again,
-5. persists an `applying` state containing recovery evidence,
-6. re-fingerprints the local source,
-7. performs another live remote-absence check,
-8. removes the local workspace file,
-9. commits deletion convergence, recovery metadata, and item completion in one SQLite transaction.
+Optional client-side encryption is an explicit workspace mode layered below the normal sync modes. It can be attached only before any synchronized baseline exists and while no transfer plan is ready/running.
 
-If journal completion fails, AtrisBridge restores the original local file only when the recovery copy still proves the expected fingerprint.
+Initial enablement requires an empty managed remote root. Importing an existing recovery key requires exact sentinel verification. Phase 7 does not automatically migrate established plaintext data to ciphertext or disable an encrypted workspace by rewriting remote content.
 
-### Both sides already absent
+## Recovery-key lifecycle
 
-`acknowledge_delete` clears the old baseline only after live local and targeted remote absence checks. This turns a previously synchronized deleted path into a fully converged absent state without deleting anything.
+The recovery key lives in the OS credential vault and can be explicitly exported/imported. Workspace removal does not automatically delete that key in Phase 7; fail-safe retention avoids irrecoverable loss of existing remote ciphertext.
 
-## User-restorable local recovery
+## Phase 8 boundary
 
-Verified recovery copies created by `local_delete` remain under AtrisBridge application data and appear in the Two-Way UI.
-
-**Restore locally** is intentionally not a sync operation. It:
-
-- requires no backup/restore/two-way execution to be active,
-- validates the recovery file is canonical under AtrisBridge's recovery root,
-- verifies its BLAKE3 + size,
-- refuses ignored/unsafe paths and any existing destination,
-- stages and verifies the copy before placement,
-- updates the file journal to `local_only`,
-- marks the recovery record restored in the same transaction,
-- never modifies Google Drive.
-
-The recreated local-only file is considered by the next fresh reviewed two-way plan.
-
-## Conflicts
-
-Phase 6 deliberately has no last-write-wins policy.
-
-- **modify/modify:** both current contents differ from the shared baseline → conflict.
-- **local delete / remote modify:** preserve the remote modification → conflict.
-- **remote delete / local modify:** preserve the local modification → conflict.
-- **unverified overlap:** both sides exist without an accepted baseline → blocked.
-
-Phase 6 surfaces these states and leaves both sides untouched. The user can resolve content manually and then prepare a fresh plan. Provider-native automatic merge or keep-both conflict resolution is future work rather than an implicit heuristic.
-
-## Race boundaries
-
-Fresh inventory and plan revalidation close stale-journal hazards, but separate filesystem/provider calls cannot create a distributed atomic transaction.
-
-AtrisBridge therefore uses:
-
-- exact reviewed evidence in SQLite conditional updates,
-- targeted provider preflight,
-- repeated live absence checks around destructive-looking operations,
-- exact-ID Drive Trash instead of path-based remote deletion,
-- postflight remote checks,
-- local staging/recovery copies,
-- user review before execution,
-- fail-closed handling when evidence changes.
-
-The remaining provider-side race windows are documented rather than hidden. Continuous watching/automatic execution is intentionally deferred until later phases.
+Phase 7 still requires explicit planning/execution. Continuous filesystem watching, background scheduling, tray automation, and unattended synchronization remain Phase 8+ work and must preserve the same conflict/evidence rules rather than bypass them.

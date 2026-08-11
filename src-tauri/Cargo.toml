@@ -1,6 +1,6 @@
 [package]
 name = "atrisbridge"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 description = "Local-first project synchronization for developers and engineering teams."
 authors = ["AtrisHub"]
 edition = "2021"
@@ -24,3 +24,4 @@ ignore = "0.4"
 blake3 = "1"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "json", "query", "rustls"] }
+keyring = "4.1.6"

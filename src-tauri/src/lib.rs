@@ -2,11 +2,13 @@ mod backup;
 mod backup_recovery;
 mod commands;
 mod database;
+mod encryption;
 mod models;
 mod provider_sessions;
 mod provider_storage;
 mod restore;
 mod scanner;
+mod secure_store;
 mod storage;
 mod sync;
 mod sync_recovery;
@@ -54,6 +56,10 @@ pub fn run() {
             sync::execute_sync_plan,
             sync_recovery::list_sync_recoveries,
             sync_recovery::restore_sync_recovery,
+            encryption::workspace_encryption_status,
+            encryption::enable_workspace_encryption,
+            encryption::export_workspace_recovery_key,
+            encryption::import_workspace_recovery_key,
         ])
         .run(tauri::generate_context!())
         .expect("error while running AtrisBridge");

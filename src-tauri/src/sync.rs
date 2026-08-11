@@ -893,7 +893,7 @@ fn valid_remote_evidence(file: &FileEvidence) -> bool {
 }
 
 fn has_valid_md5(kind: Option<&str>, hash: Option<&str>) -> bool {
-    matches!(kind, Some(value) if value.eq_ignore_ascii_case("MD5"))
+    matches!(kind, Some(value) if value.eq_ignore_ascii_case("MD5") || value == rclone::CRYPT_CHECKSUM_TYPE)
         && hash.is_some_and(|value| {
             value.len() == 32 && value.chars().all(|character| character.is_ascii_hexdigit())
         })
@@ -1675,16 +1675,19 @@ fn ensure_download_matches_remote(
         .expected_remote_checksum
         .as_deref()
         .ok_or_else(|| "Download plan is missing remote checksum.".to_string())?;
-    if local_size != expected_size
-        || !expected_type.eq_ignore_ascii_case("MD5")
-        || !local_md5.eq_ignore_ascii_case(expected_hash)
-    {
-        return Err(
-            "Downloaded content did not match the reviewed Google Drive size and MD5 evidence."
-                .into(),
-        );
+    if local_size != expected_size {
+        return Err("Downloaded content size did not match verified remote evidence.".into());
     }
-    Ok(())
+    if expected_type.eq_ignore_ascii_case("MD5") {
+        if local_md5.eq_ignore_ascii_case(expected_hash) {
+            return Ok(());
+        }
+        return Err("Downloaded content did not match verified Google Drive MD5 evidence.".into());
+    }
+    if expected_type == rclone::CRYPT_CHECKSUM_TYPE {
+        return Ok(());
+    }
+    Err("Downloaded content uses an unsupported remote checksum type.".into())
 }
 
 fn complete_content_sync(
@@ -2586,30 +2589,7 @@ fn download_remote_to_stage(
     remote_file_path: &str,
     destination: &Path,
 ) -> Result<(), String> {
-    if fs::symlink_metadata(destination).is_ok() {
-        return Err("Two-way staging path already exists.".into());
-    }
-    let normalized = rclone::normalize_remote_path(remote_file_path)?;
-    if normalized.is_empty() {
-        return Err("Remote download path cannot be empty.".into());
-    }
-    let executable = locate_runtime(app)?;
-    let source = format!(":drive:{normalized}");
-    let output = drive_command(&executable, token)
-        .arg("copyto")
-        .arg(source)
-        .arg(destination)
-        .args([
-            "--checksum",
-            "--immutable",
-            "--retries",
-            "1",
-            "--stats",
-            "0",
-        ])
-        .output()
-        .map_err(|error| format!("Could not start Google Drive download: {error}"))?;
-    ensure_process_success("Google Drive two-way download", &output)
+    rclone::download_google_drive_file_to_stage(app, token, remote_file_path, destination)
 }
 
 fn trash_google_drive_file_by_id(token_json: &str, file_id: &str) -> Result<(), String> {

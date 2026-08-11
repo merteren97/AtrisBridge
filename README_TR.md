@@ -2,7 +2,7 @@
 
 AtrisBridge; yazılım ve mühendislik projelerini farklı bilgisayarlar arasında daha güvenli, takip edilebilir ve taşınabilir hale getirmek için geliştirilen local-first bir masaüstü uygulamasıdır.
 
-> **Durum:** erken alpha (`0.1.0-alpha.5`). Yerel envanter, kalıcı SQLite state, restricted Google Drive transport, guarded backup, verified restore ve explicit conflict-aware two-way synchronization uygulanmıştır. Sürekli arka plan sync'i ve otomatik conflict resolution bilinçli olarak kapalıdır.
+> **Durum:** erken alpha (`0.1.0-alpha.6`). Yerel envanter, kalıcı SQLite state, restricted Google Drive transport, guarded backup/restore, conflict-aware two-way sync, işletim sistemi destekli credential persistence ve opsiyonel client-side içerik şifreleme uygulanmıştır.
 
 [English README](README.md)
 
@@ -13,89 +13,90 @@ Aktif projeleri bilgisayarlar arasında taşımak çoğu zaman ZIP dosyaları, m
 - local-first workspace metadata ve scanning,
 - restart sonrasında kaybolmayan SQLite file state,
 - local içerik için BLAKE3 fingerprint,
-- remote provider ID/size/checksum evidence'ını ayrı tutma,
-- explicit last-synchronized baseline,
-- secret/generated dosyalar için built-in ignore + `.atrisbridgeignore`,
-- synchronized path'lerde symlink traversal yapmama,
-- review-first backup, restore ve two-way planları,
-- kör kalıcı silme yerine recoverable deletion semantics.
+- local / remote / synchronized-baseline evidence ayrımı,
+- last-write-wins yerine conflict-aware two-way planlama,
+- recoverable deletion propagation,
+- OS-native secure credential storage,
+- opsiyonel client-side içerik şifreleme,
+- ilk provider olarak Google Drive kullanan provider-independent mimari.
 
 ## Şu anda çalışan özellikler
 
-Phase 0'dan Phase 6'ya kadar ilk tam reviewed synchronization loop tamamlandı:
+Phase 0'dan Phase 7'ye kadar:
 
-- Tauri 2 + React + TypeScript masaüstü shell,
-- workspace yönetimi ve native directory picker,
+- Tauri 2 + React + TypeScript masaüstü uygulaması,
+- native workspace seçimi ve yönetimi,
 - Rust scanner + BLAKE3 fingerprint,
-- OS application-data altında SQLite state,
-- kalıcı local / remote / last-synchronized evidence,
-- tam olarak `v1.74.4` isteyen pinned rclone runtime,
-- `drive.file` scope ile Google Drive OAuth; OAuth session verisi yalnızca process memory'de,
-- workspace → managed Drive folder binding,
+- generated output, Git metadata, IDE cache, `.env*`, private key/certificate ve AtrisBridge recovery artifact'ları için built-in exclusions,
+- `.atrisbridgeignore`,
+- application-data altında SQLite journal,
+- kalıcı local/remote evidence,
+- pinned rclone `v1.74.4`,
+- `drive.file` ile Google Drive OAuth,
+- OAuth credential'larını yalnızca işletim sisteminin güvenli credential vault'u üzerinden kalıcı saklama,
+- workspace → Drive folder binding,
 - guarded local → Drive backup,
-- verified Drive → local restore,
-- explicit **Two-Way** workspace modu,
-- planlama ve execution öncesinde fresh local + remote observation,
-- baseline tabanlı upload/download kararları,
-- modify/modify ve delete/modify conflict'lerini last-write-wins kullanmadan gösterme,
-- reviewed local deletion → exact reviewed Google Drive file ID'yi Trash'e taşıma,
-- reviewed remote deletion → local silmeden önce verified recovery copy oluşturma,
-- kullanıcı tarafından local'e geri yüklenebilen recovery copy'ler,
-- deletion propagation çevresinde live local/remote absence preflight,
-- interrupted transfer/apply state'leri için startup recovery,
-- iki aşamalı desktop akış: **Prepare → review → Run**,
-- frontend ve Rust için Linux CI.
+- staged ve recoverable Drive → local restore,
+- review-first conflict-aware two-way synchronization,
+- reviewed deletion için exact-ID Google Drive Trash,
+- remote deletion local'e uygulanmadan önce app-data recovery copy,
+- recovery copy'yi açık kullanıcı aksiyonuyla geri alma,
+- workspace bazında opsiyonel **client-side içerik şifreleme**,
+- encrypted workspace için `AB1-...` recovery key export/import,
+- plan ve execution öncesi fresh evidence,
+- frontend ve Rust doğrulaması için Linux CI.
 
-Workspace kaldırmak yalnızca AtrisBridge metadata'sını siler; proje dizinine dokunmaz. Provider'ı unutmak da local provider metadata'sını ve memory'deki session'ı kaldırır; Drive verisini silmez.
+Workspace'i AtrisBridge'den kaldırmak proje dosyalarını silmez. Phase 7 ayrıca encryption recovery key'i workspace metadata ile birlikte OS credential vault'tan otomatik silmez; sessiz key silme encrypted remote veriyi geri döndürülemez hale getirebileceği için key fail-safe şekilde korunur.
 
-## Phase 6 — conflict-aware two-way synchronization
+## Sync güvenlik modeli
 
-Two-Way davranışı workspace bazında explicit olarak açılır. Modu açmak tek başına hiçbir transfer başlatmaz. **Prepare sync** iki inventory'yi yenileyip review edilebilir bir plan oluşturur; yalnızca **Run sync** hâlâ güvenli olduğu doğrulanan item'ları uygular.
+AtrisBridge otomatik last-write-wins yerine explicit review edilen planlar kullanır.
 
-AtrisBridge current local/remote evidence'ı son başarılı synchronized baseline ile karşılaştırır:
+Two-Way modunda:
 
-| Local | Remote | Baseline yorumu | Karar |
-| --- | --- | --- | --- |
-| yeni | yok | baseline yok | upload create |
-| yok | yeni | baseline yok | download create |
-| var | var | baseline yok | unverified overlap, block |
-| değişmiş | aynı | verified | upload update |
-| aynı | değişmiş | verified | download update |
-| değişmiş | değişmiş | verified | conflict; iki tarafa da dokunma |
-| silinmiş | aynı | verified | reviewed Drive file ID → Trash |
-| silinmiş | değişmiş | verified | delete/modify conflict |
-| aynı | silinmiş | verified | recoverable local delete |
-| değişmiş | silinmiş | verified | delete/modify conflict |
-| silinmiş | silinmiş | verified | converged deletion acknowledgement |
+- local değişti / remote aynı → reviewed upload,
+- local aynı / remote değişti → reviewed download,
+- iki taraf da değişti → conflict,
+- local silindi / remote aynı → exact reviewed Drive object Trash'e taşınır,
+- remote silindi / local aynı → verified recovery copy sonrası reviewed local deletion,
+- delete/modify overlap → conflict,
+- shared baseline sonrasında iki taraf da yok → converged deletion acknowledgement.
 
-Modification time conflict authority olarak kullanılmaz. Evidence eksik, belirsiz, ignored, unsafe veya case-insensitive filesystem'de çakışıyorsa AtrisBridge tahmin yapmak yerine item'ı bloke eder.
+Modification time conflict çözüm otoritesi değildir. Execution öncesinde provider ve filesystem evidence yeniden okunur; SQLite completion exact plan evidence üzerinden conditional yapılır.
 
-### Deletion safety
+## Phase 7 secure credential storage
 
-**Local deletion → Drive:** current remote ID, size ve MD5 synchronized evidence ile hâlâ eşleşmelidir. Provider mutation'dan hemen önce local path'in hâlâ gerçekten absent olduğu tekrar kontrol edilir. Reviewed Google Drive object **exact file ID** üzerinden Trash'e taşınır; permanent delete surface yoktur. Postflight path kontrolü, aynı path'e sonradan gelen başka bir Drive object'in silinen object sanılmasını engeller.
+Google Drive OAuth credential'ları artık bilerek session-only tutulmaz. AtrisBridge credential'ı işletim sisteminin secure credential facility'sinde saklar ve gerektiğinde Rust backend içine lazy-load eder.
 
-**Remote deletion → local:** local BLAKE3 + size baseline ile hâlâ eşleşmelidir ve targeted Drive kontrolleri remote path'in absent kalmaya devam ettiğini doğrulamalıdır. Local dosya kaldırılmadan önce AtrisBridge application-data recovery alanında bir copy oluşturur, BLAKE3 + size ile doğrular, diske flush eder, `applying` state'ini yazar ve ancak bundan sonra workspace dosyasını kaldırır. Recovery metadata, deletion convergence ve operation completion aynı SQLite transaction'ında commit edilir.
+Credential şu yerlere yazılmaz:
 
-Available recovery copy'ler Two-Way panelinde görünür. **Restore locally** app-data recovery dosyasını yeniden doğrular, mevcut bir local path'in üzerine yazmayı reddeder, dosyayı local-only change olarak geri oluşturur ve Google Drive'ı değiştirmez. Sonraki reviewed sync plan bu yeniden oluşturulan dosya için kararı verir.
+- SQLite,
+- `rclone.conf`,
+- `.env`,
+- synchronized workspace,
+- repository dosyaları.
 
-### Provider race boundary
+Saved credential kaldırılırsa cloud işlemlerine devam etmek için Google OAuth bağlantısını yeniden kurmak gerekir. Provider'ı **Forget** etmek AtrisBridge provider metadata'sını da kaldırır; Drive verisini silmez.
 
-AtrisBridge content write veya Trash için provider-native atomic compare-and-swap garantisi verdiğini iddia etmez. Fresh inventory, targeted ID/checksum preflight, live absence check, exact-ID Trash, postflight verification ve recoverable local mutation race window'larını daraltır; ancak başka bir Drive client ayrı provider request'leri arasında object'i değiştirebilir. Trash recoverable olduğu ve conflict'ler otomatik çözülmediği için belirsiz state fail-closed olur ve fresh reviewed plan gerektirir.
+## Phase 7 opsiyonel client-side encryption
 
-Direct Drive Trash control-plane request current in-memory OAuth access token'ını kullanır. Access token artık geçerli değilse operation güvenli şekilde fail olur ve provider yeniden bağlanabilir; AtrisBridge plaintext OAuth credential persist etmez.
+Client-side encryption workspace bazında opt-in'dir. Yalnızca henüz accepted synchronized baseline oluşmamışken etkinleştirilebilir ve managed remote root boş olmalıdır. Phase 7 plaintext veriyi yerinde otomatik olarak ciphertext'e migrate etmez.
 
-Detay için [docs/sync-engine.md](docs/sync-engine.md) ve [docs/rclone-transport.md](docs/rclone-transport.md).
+Encryption açıkken:
 
-## Phase 4/5 one-way safety
+- regular file içeriği Drive'a gitmeden önce local'de şifrelenir,
+- restore/sync sırasında plaintext local tarafta üretilir,
+- encryption master key `AB1-...` recovery key ile temsil edilir,
+- recovery key OS credential vault'ta saklanır,
+- recovery key yalnızca explicit export/import aksiyonlarıyla kullanıcıya açılır,
+- local BLAKE3 ile remote ciphertext provider ID/MD5 evidence ayrı tutulur,
+- encrypted Drive object reviewed Trash sırasında yine exact provider ID ile hedeflenir.
 
-Workspace Two-Way modunda değilken backup ve restore explicit one-way workflow olarak kullanılmaya devam eder:
+### Metadata sınırı
 
-- **Backup:** yalnızca local → Drive; local deletion remote deletion anlamına gelmez.
-- **Restore:** yalnızca Drive → local; remote absence local deletion anlamına gelmez.
-- Restore download önce hidden staging path'e alınır ve local apply öncesi doğrulanır.
-- Existing local restore target journal completion'a kadar geçici `.bak` recovery copy kullanır.
+İlk encrypted transport sürümünde filename encryption bilinçli olarak kapalıdır. **Dosya içeriği şifrelidir; ancak dosya adları ve klasör yapısı storage provider tarafından görülebilir.** Bu tercih mevcut exact path/provider-ID/collision/conflict/delete evidence modelini korur.
 
-Detay için [docs/backup-engine.md](docs/backup-engine.md) ve [docs/restore-engine.md](docs/restore-engine.md).
+Encrypted namespace veya key-verification sentinel kaybolur/bozulursa AtrisBridge bunu "remote boş" veya "remote silindi" olarak yorumlamaz; fail-closed davranıp yeni delete intent üretmez.
 
 ## Yol haritası
 
@@ -104,22 +105,22 @@ Detay için [docs/backup-engine.md](docs/backup-engine.md) ve [docs/restore-engi
 3. **Phase 3 — restricted rclone transport + Google Drive observation** ✅
 4. **Phase 4 — güvenli incremental backup** ✅
 5. **Phase 5 — güvenli pull ve restore** ✅
-6. **Phase 6 — conflict-aware two-way synchronization** ✅
-7. **Phase 7 — kalıcı secure credential storage + opsiyonel client-side encryption**
+6. **Phase 6 — conflict-aware two-way sync** ✅
+7. **Phase 7 — persistent secure credential storage + opsiyonel client-side content encryption** ✅
 8. **Phase 8+ — continuous watch mode, tray, ek provider'lar ve release pipeline**
 
 Detaylar için [docs/architecture.md](docs/architecture.md), [docs/sync-engine.md](docs/sync-engine.md), [docs/security.md](docs/security.md), [docs/rclone-transport.md](docs/rclone-transport.md), [docs/backup-engine.md](docs/backup-engine.md) ve [docs/restore-engine.md](docs/restore-engine.md) belgelerine bakabilirsiniz.
 
 ## Geliştirme
 
-### Gereksinimler
+Gereksinimler:
 
 - Node.js LTS
 - npm
 - Rust stable
-- İşletim sisteminiz için Tauri 2 gereksinimleri
+- işletim sisteminiz için Tauri 2 gereksinimleri
 
-AtrisBridge sistem `PATH`'inden rastgele bir `rclone` executable çalıştırmaz:
+Pinned rclone sidecar'ı hazırlayın:
 
 ```bash
 npm install
@@ -127,27 +128,18 @@ npm run sidecar:prepare
 npm run tauri:dev
 ```
 
-`sidecar:prepare`, resmi rclone release host'undan `v1.74.4` arşivini indirir, platform SHA-256 değerini doğrular ve executable'ı `src-tauri/binaries/` altına yerleştirir. Binary Git tarafından ignore edilir.
-
 Validation:
 
 ```bash
 npm run build
+cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 cargo test --manifest-path src-tauri/Cargo.toml --lib
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
-## Google Drive davranışı
-
-Google Drive browser-based OAuth ve `drive.file` scope kullanır. Provider operations `AtrisBridge/...` managed workspace path'i ile sınırlandırılır. Regular transfer bytes narrow rclone operations arkasında kalır; Phase 6 yalnızca exact reviewed file ID'yi Trash'e taşımak için dar kapsamlı direct Drive API control-plane request kullanır.
-
-Remote MD5 provider evidence olarak tutulur ve BLAKE3 ile aynı algoritmaymış gibi karşılaştırılmaz. Current regular-file adapter native Google Docs objelerini atlar.
-
-OAuth token yalnızca process memory'dedir. Uygulama restart sonrasında Phase 7 secure credential layer gelene kadar provider'ın yeniden bağlanması gerekir.
-
 ## `.atrisbridgeignore`
 
-Workspace root'ta gitignore uyumlu `.atrisbridgeignore` kullanılabilir. Custom dosya olmasa bile built-in safety rules aktiftir.
+Workspace kökünde gitignore-compatible `.atrisbridgeignore` kuralları eklenebilir. Built-in safety exclusions custom dosya bulunmasa da aktiftir.
 
 ```gitignore
 artifacts/
@@ -156,17 +148,9 @@ customer-dumps/
 *.bak
 ```
 
-Built-in kurallar Git metadata, yaygın generated/IDE dizinleri, `.env*`, common private-key/certificate formatları ve AtrisBridge `.part`/`.bak` transfer-recovery artifact'larını dışlar.
-
-## Kalıcı sync journal
-
-AtrisBridge coordination state'ini OS application-data dizinindeki `atrisbridge.db` içinde tutar. SQLite foreign key, WAL journaling ve bounded busy timeout kullanır. Local observation, remote observation, synchronized baseline, plan, conflict ve recovery metadata ayrı evidence sınıfları olarak tutulur.
-
-Phase 5 ve Phase 6 feature-owned tabloları mevcut Phase 4 core tablolarını destructive rewrite etmeden idempotent ekler. Interrupted operation sessizce retry edilmez veya synchronized kabul edilmez; startup recovery yalnızca stored fingerprint'in güvenli olduğunu kanıtladığı mutation'ları rollback eder.
-
 ## Güvenlik ve şirket politikası
 
-AtrisBridge yanlışlıkla veri sızdırma riskini azaltacak şekilde tasarlanır; ancak şirket veya müşteri kaynak kodunu üçüncü taraf bir servise yüklemek için size yetki vermez. Senkronize ettiğiniz projenin şirket politikalarına, DLP kurallarına, sözleşmelere, data-residency/export-control gereksinimlerine ve yetkilendirme kurallarına her zaman uymalısınız.
+AtrisBridge yanlışlıkla veri sızdırma ve destructive synchronization riskini azaltacak şekilde tasarlanır; ancak şirket veya müşteri kaynak kodunu üçüncü taraf bir servise yüklemek için size yetki vermez. Senkronize edilen projenin şirket politikasına, DLP kurallarına, sözleşmelere, data-residency/export-control ve yetkilendirme gereksinimlerine her zaman uyulmalıdır.
 
 Güvenlik açıklarını public issue üzerinden paylaşmayın. [SECURITY.md](SECURITY.md) belgesini kullanın.
 

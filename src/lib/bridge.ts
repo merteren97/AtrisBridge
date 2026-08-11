@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   BackupExecutionReport,
   BackupPlan,
+  EncryptionEnableResult,
   JournalSummary,
   ProviderConnection,
   RcloneStatus,
@@ -14,6 +15,7 @@ import type {
   SyncPlan,
   SyncRecoveryEntry,
   Workspace,
+  WorkspaceEncryptionStatus,
   WorkspaceRemoteBinding,
 } from "../types";
 
@@ -79,6 +81,25 @@ export async function bindWorkspaceRemote(
   remotePath: string,
 ): Promise<WorkspaceRemoteBinding> {
   return invoke<WorkspaceRemoteBinding>("bind_workspace_remote", { id, providerId, remotePath });
+}
+
+export async function getWorkspaceEncryptionStatus(id: string): Promise<WorkspaceEncryptionStatus> {
+  return invoke<WorkspaceEncryptionStatus>("workspace_encryption_status", { id });
+}
+
+export async function enableWorkspaceEncryption(id: string): Promise<EncryptionEnableResult> {
+  return invoke<EncryptionEnableResult>("enable_workspace_encryption", { id });
+}
+
+export async function exportWorkspaceRecoveryKey(id: string): Promise<string> {
+  return invoke<string>("export_workspace_recovery_key", { id });
+}
+
+export async function importWorkspaceRecoveryKey(
+  id: string,
+  recoveryKey: string,
+): Promise<WorkspaceEncryptionStatus> {
+  return invoke<WorkspaceEncryptionStatus>("import_workspace_recovery_key", { id, recoveryKey });
 }
 
 export async function scanRemoteInventory(id: string): Promise<RemoteInventoryReport> {

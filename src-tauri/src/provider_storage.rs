@@ -111,6 +111,7 @@ fn provider_from_row(row: &Row<'_>) -> rusqlite::Result<ProviderConnection> {
         created_at: row.get(4)?,
         last_verified_at: row.get(5)?,
         session_active: false,
+        credential_persisted: false,
     })
 }
 
@@ -152,6 +153,7 @@ fn upsert_google_drive_connection_with_connection(
         created_at: now.clone(),
         last_verified_at: Some(now),
         session_active: false,
+        credential_persisted: false,
     };
     connection
         .execute(
@@ -442,11 +444,12 @@ mod tests {
         let (state, local_present, remote_present, tombstone): (String, i64, i64, i64) = connection
             .query_row(
                 "SELECT state, local_present, remote_present, tombstone
-                 FROM file_entries WHERE workspace_id = 'workspace-1' AND relative_path = 'src/main.rs'",
+                 FROM file_entries
+                 WHERE workspace_id = 'workspace-1' AND relative_path = 'src/main.rs'",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
-            .expect("entry");
+            .expect("file state");
         assert_eq!(state, "remote_only");
         assert_eq!(local_present, 0);
         assert_eq!(remote_present, 1);
@@ -454,21 +457,9 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_unverified_remote_file_is_a_conflict() {
+    fn missing_remote_file_never_creates_remote_delete_intent() {
         let mut connection = test_connection();
         seed_workspace(&connection);
-        connection
-            .execute(
-                "INSERT INTO file_entries (
-                    workspace_id, relative_path, local_present, local_size, local_hash,
-                    state, first_seen_at, last_seen_at
-                 ) VALUES (
-                    'workspace-1', 'src/main.rs', 1, 12, 'blake3-local',
-                    'local_only', '2026-08-11T07:00:00Z', '2026-08-11T07:00:00Z'
-                 )",
-                [],
-            )
-            .expect("local entry");
         let provider =
             upsert_google_drive_connection_with_connection(&connection, None).expect("provider");
         bind_workspace_with_connection(
@@ -484,15 +475,34 @@ mod tests {
             &report(&provider.id, 1),
             &[observation("src/main.rs")],
         )
-        .expect("inventory");
-
-        let state: String = connection
-            .query_row(
-                "SELECT state FROM file_entries WHERE workspace_id = 'workspace-1' AND relative_path = 'src/main.rs'",
+        .expect("first inventory");
+        connection
+            .execute(
+                "UPDATE file_entries
+                 SET local_present = 1,
+                     local_hash = 'local-hash',
+                     last_synced_hash = 'local-hash',
+                     last_synced_remote_checksum_type = 'MD5',
+                     last_synced_remote_checksum = 'abc',
+                     state = 'synced'",
                 [],
-                |row| row.get(0),
             )
-            .expect("state");
+            .expect("baseline");
+
+        record_remote_inventory_with_connection(&mut connection, &report(&provider.id, 0), &[])
+            .expect("second inventory");
+
+        let (remote_present, state, tombstone): (i64, String, i64) = connection
+            .query_row(
+                "SELECT remote_present, state, tombstone
+                 FROM file_entries
+                 WHERE workspace_id = 'workspace-1' AND relative_path = 'src/main.rs'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("missing state");
+        assert_eq!(remote_present, 0);
         assert_eq!(state, "conflict");
+        assert_eq!(tombstone, 0);
     }
 }

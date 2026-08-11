@@ -1450,18 +1450,22 @@ fn ensure_download_matches_remote(
     local_size: u64,
     local_md5: &str,
 ) -> Result<(), String> {
-    if local_size != operation.expected_remote_size
-        || !operation
-            .expected_remote_checksum_type
-            .eq_ignore_ascii_case("MD5")
-        || !local_md5.eq_ignore_ascii_case(&operation.expected_remote_checksum)
-    {
-        return Err(
-            "Downloaded content did not match the verified Google Drive size and MD5 evidence."
-                .into(),
-        );
+    if local_size != operation.expected_remote_size {
+        return Err("Downloaded content size did not match verified remote evidence.".into());
     }
-    Ok(())
+    if operation
+        .expected_remote_checksum_type
+        .eq_ignore_ascii_case("MD5")
+    {
+        if local_md5.eq_ignore_ascii_case(&operation.expected_remote_checksum) {
+            return Ok(());
+        }
+        return Err("Downloaded content did not match verified Google Drive MD5 evidence.".into());
+    }
+    if operation.expected_remote_checksum_type == rclone::CRYPT_CHECKSUM_TYPE {
+        return Ok(());
+    }
+    Err("Downloaded content uses an unsupported remote checksum type.".into())
 }
 
 fn validate_local_target(operation: &RestoreOperation, target: &Path) -> Result<(), String> {
@@ -1678,7 +1682,7 @@ fn ensure_managed_restore_root(remote_path: &str) -> Result<(), String> {
 }
 
 fn has_valid_md5(kind: Option<&str>, hash: Option<&str>) -> bool {
-    matches!(kind, Some(value) if value.eq_ignore_ascii_case("MD5"))
+    matches!(kind, Some(value) if value.eq_ignore_ascii_case("MD5") || value == rclone::CRYPT_CHECKSUM_TYPE)
         && hash.is_some_and(|value| {
             value.len() == 32 && value.chars().all(|character| character.is_ascii_hexdigit())
         })
@@ -1690,37 +1694,7 @@ fn download_remote_to_stage(
     remote_file_path: &str,
     destination: &Path,
 ) -> Result<(), String> {
-    if fs::symlink_metadata(destination).is_ok() {
-        return Err("Restore staging path already exists.".into());
-    }
-    let normalized = rclone::normalize_remote_path(remote_file_path)?;
-    if normalized.is_empty() {
-        return Err("Remote restore path cannot be empty.".into());
-    }
-    let executable = locate_restore_runtime(app)?;
-    let source = format!(":drive:{normalized}");
-    let mut command = clean_restore_command(&executable);
-    command
-        .arg("--config=")
-        .env("RCLONE_DRIVE_TOKEN", token)
-        .env("RCLONE_DRIVE_SCOPE", DRIVE_SCOPE)
-        .env("RCLONE_DRIVE_SKIP_GDOCS", "true")
-        .env("RCLONE_DRIVE_USE_TRASH", "true")
-        .arg("copyto")
-        .arg(source)
-        .arg(destination)
-        .args([
-            "--checksum",
-            "--immutable",
-            "--retries",
-            "1",
-            "--stats",
-            "0",
-        ]);
-    let output = command
-        .output()
-        .map_err(|error| format!("Could not start Google Drive restore download: {error}"))?;
-    ensure_process_success("Google Drive restore download", &output)
+    rclone::download_google_drive_file_to_stage(app, token, remote_file_path, destination)
 }
 
 fn locate_restore_runtime(app: &AppHandle) -> Result<PathBuf, String> {
