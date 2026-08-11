@@ -5,6 +5,7 @@ mod database;
 mod models;
 mod provider_sessions;
 mod provider_storage;
+mod restore;
 mod scanner;
 mod storage;
 mod transport;
@@ -19,6 +20,7 @@ pub fn run() {
         .setup(|app| {
             backup_recovery::recover_interrupted_plans(app.handle())
                 .map_err(std::io::Error::other)?;
+            restore::recover_interrupted_restores(app.handle()).map_err(std::io::Error::other)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -40,6 +42,9 @@ pub fn run() {
             commands::latest_backup_plan,
             commands::prepare_backup_plan,
             commands::execute_backup_plan,
+            restore::latest_restore_plan,
+            restore::prepare_restore_plan,
+            restore::execute_restore_plan,
         ])
         .run(tauri::generate_context!())
         .expect("error while running AtrisBridge");
