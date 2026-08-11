@@ -1,5 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { JournalSummary, ScanReport, Workspace } from "../types";
+import type {
+  JournalSummary,
+  ProviderConnection,
+  RcloneStatus,
+  RemoteInventoryReport,
+  ScanReport,
+  Workspace,
+  WorkspaceRemoteBinding,
+} from "../types";
 
 export async function listWorkspaces(): Promise<Workspace[]> {
   return invoke<Workspace[]>("list_workspaces");
@@ -27,4 +35,40 @@ export async function getJournalSummary(id: string): Promise<JournalSummary> {
 
 export async function listJournalSummaries(): Promise<JournalSummary[]> {
   return invoke<JournalSummary[]>("journal_summaries");
+}
+
+export async function getRcloneStatus(): Promise<RcloneStatus> {
+  return invoke<RcloneStatus>("rclone_runtime_status");
+}
+
+export async function listProviderConnections(): Promise<ProviderConnection[]> {
+  return invoke<ProviderConnection[]>("provider_connections");
+}
+
+export async function connectGoogleDrive(): Promise<ProviderConnection> {
+  return invoke<ProviderConnection>("connect_google_drive");
+}
+
+export async function disconnectProviderSession(providerId: string): Promise<void> {
+  return invoke("disconnect_provider_session", { providerId });
+}
+
+export async function forgetProvider(providerId: string): Promise<void> {
+  return invoke("forget_provider", { providerId });
+}
+
+export async function getWorkspaceRemoteBinding(id: string): Promise<WorkspaceRemoteBinding | null> {
+  return invoke<WorkspaceRemoteBinding | null>("workspace_remote_binding", { id });
+}
+
+export async function bindWorkspaceRemote(
+  id: string,
+  providerId: string,
+  remotePath: string,
+): Promise<WorkspaceRemoteBinding> {
+  return invoke<WorkspaceRemoteBinding>("bind_workspace_remote", { id, providerId, remotePath });
+}
+
+export async function scanRemoteInventory(id: string): Promise<RemoteInventoryReport> {
+  return invoke<RemoteInventoryReport>("scan_remote_inventory", { id });
 }

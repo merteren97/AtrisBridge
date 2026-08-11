@@ -10,6 +10,8 @@ pnpm-debug.log*
 # Tauri / Rust
 src-tauri/target/
 **/*.rs.bk
+src-tauri/binaries/rclone
+src-tauri/binaries/rclone.exe
 
 # IDE / OS
 .vscode/
