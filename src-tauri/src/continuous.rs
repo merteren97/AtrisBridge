@@ -26,6 +26,9 @@ use crate::{
     storage::{find_workspace, get_journal_summary, record_scan},
     sync,
     transport::rclone,
+    workspace_coordinator::{
+        WorkspaceLeaseError, WorkspaceMutationCoordinator, WorkspaceOperationKind,
+    },
 };
 
 const LOCAL_DEBOUNCE: Duration = Duration::from_millis(1800);
@@ -35,6 +38,7 @@ const DEFAULT_REMOTE_POLL_SECONDS: u64 = 60;
 const MIN_REMOTE_POLL_SECONDS: u64 = 30;
 const MAX_REMOTE_POLL_SECONDS: u64 = 3600;
 const MAX_FAILURE_BACKOFF_MULTIPLIER: u64 = 8;
+const COORDINATOR_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -78,6 +82,12 @@ struct PendingCycle {
     reason: String,
 }
 
+#[derive(Debug, Clone)]
+struct CycleRetry {
+    reason: String,
+    delay: Duration,
+}
+
 #[derive(Debug)]
 enum SchedulerMessage {
     Dirty {
@@ -88,6 +98,7 @@ enum SchedulerMessage {
     },
     Finished {
         workspace_id: String,
+        retry: Option<CycleRetry>,
     },
     Cancel {
         workspace_id: String,
@@ -272,7 +283,15 @@ pub fn set_continuous_sync_enabled(
     enabled: bool,
     manager: State<'_, ContinuousSyncManager>,
     sessions: State<'_, ProviderSessionStore>,
+    coordinator: State<'_, WorkspaceMutationCoordinator>,
 ) -> Result<ContinuousSyncStatus, String> {
+    let _lease = coordinator
+        .acquire(
+            &id,
+            "desktop-watch-control",
+            WorkspaceOperationKind::Configure,
+        )
+        .map_err(|error| error.to_string())?;
     let workspace = find_workspace(&app, &id)?;
     let root = PathBuf::from(&workspace.local_path);
     if !enabled {
@@ -333,7 +352,15 @@ pub fn update_continuous_sync_settings(
     auto_apply_safe: bool,
     remote_poll_seconds: u64,
     manager: State<'_, ContinuousSyncManager>,
+    coordinator: State<'_, WorkspaceMutationCoordinator>,
 ) -> Result<ContinuousSyncStatus, String> {
+    let _lease = coordinator
+        .acquire(
+            &id,
+            "desktop-watch-control",
+            WorkspaceOperationKind::Configure,
+        )
+        .map_err(|error| error.to_string())?;
     find_workspace(&app, &id)?;
     validate_poll_seconds(remote_poll_seconds)?;
     ensure_settings_row(&app, &id)?;
@@ -421,8 +448,27 @@ fn scheduler_loop(
                             .or_insert(PendingCycle { due, reason });
                     }
                 }
-                SchedulerMessage::Finished { workspace_id } => {
+                SchedulerMessage::Finished {
+                    workspace_id,
+                    retry,
+                } => {
                     in_flight.remove(&workspace_id);
+                    if let Some(retry) = retry {
+                        if matches!(is_enabled(&app, &workspace_id), Ok(true)) {
+                            let due = Instant::now() + retry.delay;
+                            pending
+                                .entry(workspace_id)
+                                .and_modify(|entry| {
+                                    if due > entry.due {
+                                        entry.due = due;
+                                    }
+                                })
+                                .or_insert(PendingCycle {
+                                    due,
+                                    reason: retry.reason,
+                                });
+                        }
+                    }
                 }
                 SchedulerMessage::Cancel { workspace_id } => {
                     pending.remove(&workspace_id);
@@ -471,21 +517,49 @@ fn scheduler_loop(
             let cycle_app = app.clone();
             let completion_sender = sender.clone();
             tauri::async_runtime::spawn(async move {
-                run_cycle(cycle_app, workspace_id.clone(), reason).await;
-                let _ = completion_sender.send(SchedulerMessage::Finished { workspace_id });
+                let retry = run_cycle(cycle_app, workspace_id.clone(), reason).await;
+                let _ = completion_sender.send(SchedulerMessage::Finished {
+                    workspace_id,
+                    retry,
+                });
             });
         }
     }
 }
 
-async fn run_cycle(app: AppHandle, workspace_id: String, reason: String) {
+async fn run_cycle(app: AppHandle, workspace_id: String, reason: String) -> Option<CycleRetry> {
     let previous = match ensure_settings_row(&app, &workspace_id) {
         Ok(settings) => settings,
-        Err(_) => return,
+        Err(_) => return None,
     };
+
+    let coordinator = app.state::<WorkspaceMutationCoordinator>();
+    let _lease = match coordinator.acquire(
+        &workspace_id,
+        "continuous-watch",
+        WorkspaceOperationKind::Continuous,
+    ) {
+        Ok(lease) => lease,
+        Err(WorkspaceLeaseError::Busy(active)) => {
+            let message = format!(
+                "Workspace is busy with '{}' owned by '{}'. Continuous reconciliation is queued and will retry automatically.",
+                active.kind, active.owner
+            );
+            let _ = record_cycle_deferred(&app, &workspace_id, &reason, &message);
+            return Some(CycleRetry {
+                reason,
+                delay: COORDINATOR_RETRY_DELAY,
+            });
+        }
+        Err(error) => {
+            let _ = record_cycle_error(&app, &workspace_id, &reason, &error.to_string());
+            return None;
+        }
+    };
+
     if let Err(error) = mark_cycle_running(&app, &workspace_id, &reason) {
         let _ = record_cycle_error(&app, &workspace_id, &reason, &error);
-        return;
+        return None;
     }
 
     let result = run_cycle_inner(&app, &workspace_id, &reason, &previous).await;
@@ -497,6 +571,7 @@ async fn run_cycle(app: AppHandle, workspace_id: String, reason: String) {
             let _ = record_cycle_error(&app, &workspace_id, &reason, &error);
         }
     }
+    None
 }
 
 struct CycleOutcome {
@@ -1239,6 +1314,33 @@ fn mark_cycle_running(app: &AppHandle, workspace_id: &str, reason: &str) -> Resu
             params![reason, now, workspace_id],
         )
         .map_err(|error| format!("Could not start continuous cycle journal: {error}"))?;
+    Ok(())
+}
+
+fn record_cycle_deferred(
+    app: &AppHandle,
+    workspace_id: &str,
+    reason: &str,
+    message: &str,
+) -> Result<(), String> {
+    let connection = open_continuous_database(app)?;
+    connection
+        .execute(
+            "UPDATE continuous_sync_settings
+             SET state = 'debouncing',
+                 last_reason = ?1,
+                 last_message = ?2,
+                 last_decision = 'deferred',
+                 updated_at = ?3
+             WHERE workspace_id = ?4 AND enabled = 1",
+            params![
+                reason,
+                truncate_message(message),
+                Utc::now().to_rfc3339(),
+                workspace_id
+            ],
+        )
+        .map_err(|error| format!("Could not record deferred continuous cycle: {error}"))?;
     Ok(())
 }
 
