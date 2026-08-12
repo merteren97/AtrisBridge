@@ -6,7 +6,10 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio},
-    sync::mpsc::{self, Receiver, SyncSender, TryRecvError},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, SyncSender, TryRecvError},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -22,7 +25,8 @@ use crate::{
     ai_workspace::canonical_workspace_root,
     storage::find_workspace,
     workspace_coordinator::{
-        WorkspaceMutationCoordinator, WorkspaceMutationLease, WorkspaceOperationKind,
+        WorkspaceLeaseError, WorkspaceMutationCoordinator, WorkspaceMutationLease,
+        WorkspaceOperationKind,
     },
 };
 
@@ -33,7 +37,9 @@ const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(40);
 const OUTPUT_DRAIN_GRACE: Duration = Duration::from_secs(2);
 const PIPE_CHANNEL_CAPACITY: usize = 32;
 const MIN_TIMEOUT_SECONDS: u64 = 30;
-const MAX_TIMEOUT_SECONDS: u64 = 15 * 60;
+pub(crate) const MAX_TIMEOUT_SECONDS: u64 = 15 * 60;
+const TASK_COORDINATOR_WAIT: Duration = Duration::from_secs(2 * 60);
+const TASK_COORDINATOR_RETRY: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone)]
 struct CommandProfileSpec {
@@ -68,6 +74,7 @@ pub struct AiCommandRunResult {
     pub success: bool,
     pub exit_code: Option<i32>,
     pub timed_out: bool,
+    pub cancelled: bool,
     pub duration_ms: u64,
     pub stdout: String,
     pub stderr: String,
@@ -106,6 +113,7 @@ struct CommandOutput {
     success: bool,
     code: Option<i32>,
     timed_out: bool,
+    cancelled: bool,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
     stdout_truncated: bool,
@@ -130,21 +138,28 @@ pub fn list_ai_command_profiles(
 ) -> Result<Vec<AiCommandProfile>, String> {
     let started = Instant::now();
     let session = ai_gateway::authorize_session(&app, &session_id, "command.execute")?;
-    let result = (|| {
-        require_isolated_session(&session)?;
-        ai_gateway::authorize_session(&app, &session_id, "git.local")?;
-        let workspace = find_workspace(&app, &session.workspace_id)?;
-        let primary_root = canonical_workspace_root(&workspace.local_path)?;
-        let root = ai_git::session_workspace_root(&app, &session, coordinator.inner())?;
-        let _lease = acquire_command(coordinator.inner(), &session)?;
-        let specs = detect_profiles(&root)?;
-        Ok(specs
-            .into_iter()
-            .map(|spec| public_profile(spec, &root, &primary_root))
-            .collect())
-    })();
+    let result = inspect_ai_command_profiles(&app, &session_id, coordinator.inner());
     record_profile_result(&app, &session, started, &result)?;
     result
+}
+
+pub(crate) fn inspect_ai_command_profiles(
+    app: &AppHandle,
+    session_id: &str,
+    coordinator: &WorkspaceMutationCoordinator,
+) -> Result<Vec<AiCommandProfile>, String> {
+    let session = ai_gateway::authorize_session(app, session_id, "command.execute")?;
+    require_isolated_session(&session)?;
+    ai_gateway::authorize_session(app, session_id, "git.local")?;
+    let workspace = find_workspace(app, &session.workspace_id)?;
+    let primary_root = canonical_workspace_root(&workspace.local_path)?;
+    let root = ai_git::session_workspace_root(app, &session, coordinator)?;
+    let _lease = acquire_command(coordinator, &session, None)?;
+    let specs = detect_profiles(&root)?;
+    Ok(specs
+        .into_iter()
+        .map(|spec| public_profile(spec, &root, &primary_root))
+        .collect())
 }
 
 #[tauri::command]
@@ -156,10 +171,20 @@ pub async fn run_ai_command(
 ) -> Result<AiCommandRunResult, String> {
     let coordinator = coordinator.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        run_ai_command_blocking(app, session_id, profile_id, coordinator)
+        run_ai_command_blocking(app, session_id, profile_id, coordinator, None)
     })
     .await
     .map_err(|error| format!("AI command worker failed: {error}"))?
+}
+
+pub(crate) fn run_ai_command_cancellable(
+    app: AppHandle,
+    session_id: String,
+    profile_id: String,
+    coordinator: WorkspaceMutationCoordinator,
+    cancel: &AtomicBool,
+) -> Result<AiCommandRunResult, String> {
+    run_ai_command_blocking(app, session_id, profile_id, coordinator, Some(cancel))
 }
 
 fn run_ai_command_blocking(
@@ -167,6 +192,7 @@ fn run_ai_command_blocking(
     session_id: String,
     profile_id: String,
     coordinator: WorkspaceMutationCoordinator,
+    cancel: Option<&AtomicBool>,
 ) -> Result<AiCommandRunResult, String> {
     let started = Instant::now();
     let session = ai_gateway::authorize_session(&app, &session_id, "command.execute")?;
@@ -179,7 +205,7 @@ fn run_ai_command_blocking(
         let workspace = find_workspace(&app, &session.workspace_id)?;
         let primary_root = canonical_workspace_root(&workspace.local_path)?;
         let root = ai_git::session_workspace_root(&app, &session, &coordinator)?;
-        let _lease = acquire_command(&coordinator, &session)?;
+        let _lease = acquire_command(&coordinator, &session, cancel)?;
 
         let spec = detect_profiles(&root)?
             .into_iter()
@@ -214,6 +240,7 @@ fn run_ai_command_blocking(
             &runtime_root,
             &executable,
             &spec,
+            cancel,
         ) {
             Ok(output) => output,
             Err(error) => {
@@ -234,6 +261,7 @@ fn run_ai_command_blocking(
             success: output.success,
             exit_code: output.code,
             timed_out: output.timed_out,
+            cancelled: output.cancelled,
             duration_ms,
             stdout: output_text(&output.stdout),
             stderr: output_text(&output.stderr),
@@ -246,7 +274,14 @@ fn run_ai_command_blocking(
             execution_policy: "isolated_worktree_fixed_profile_credential_minimized",
         })
     })();
-    record_command_result(&app, &session, &run_id, started, &result)?;
+    record_command_result(
+        &app,
+        &session,
+        &run_id,
+        started,
+        &result,
+        cancellation_requested(cancel),
+    )?;
     result
 }
 
@@ -502,7 +537,7 @@ fn bounded_timeout(seconds: u64) -> Duration {
     Duration::from_secs(seconds.clamp(MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS))
 }
 
-fn validate_profile_id(profile_id: &str) -> Result<(), String> {
+pub(crate) fn validate_profile_id(profile_id: &str) -> Result<(), String> {
     if profile_id.is_empty()
         || profile_id.len() > 64
         || profile_id.starts_with('-')
@@ -672,7 +707,21 @@ fn execute_profile(
     runtime_root: &Path,
     executable: &Path,
     spec: &CommandProfileSpec,
+    cancel: Option<&AtomicBool>,
 ) -> Result<CommandOutput, String> {
+    if cancellation_requested(cancel) {
+        return Ok(CommandOutput {
+            success: false,
+            code: None,
+            timed_out: false,
+            cancelled: true,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            stdout_truncated: false,
+            stderr_truncated: false,
+            output_capture_incomplete: false,
+        });
+    }
     let mut command = Command::new(executable);
     command
         .args(&spec.args)
@@ -701,6 +750,7 @@ fn execute_profile(
         spec.timeout,
         MAX_COMMAND_STDOUT_BYTES,
         MAX_COMMAND_STDERR_BYTES,
+        cancel,
     )
 }
 
@@ -853,6 +903,7 @@ fn workspace_dirty(
         Duration::from_secs(30),
         MAX_COMMAND_STDOUT_BYTES,
         16 * 1024,
+        None,
     )?;
     if output.timed_out {
         return Err("Git status inspection exceeded the command safety timeout.".into());
@@ -871,6 +922,7 @@ fn collect_child_output(
     timeout: Duration,
     stdout_max: usize,
     stderr_max: usize,
+    cancel: Option<&AtomicBool>,
 ) -> Result<CommandOutput, String> {
     let stdout: ChildStdout = child
         .stdout
@@ -889,8 +941,13 @@ fn collect_child_output(
     let mut capture = CapturedOutput::default();
     let mut status: Option<ExitStatus> = None;
     let mut timed_out = false;
+    let mut cancelled = false;
     loop {
         drain_pipe_events(&receiver, &mut capture, stdout_max, stderr_max);
+        if cancellation_requested(cancel) {
+            cancelled = true;
+            break;
+        }
         if let Some(observed) = child
             .try_wait()
             .map_err(|error| format!("Could not observe command process: {error}"))?
@@ -933,15 +990,22 @@ fn collect_child_output(
         .unwrap_or(false);
     let code = status.and_then(|value| value.code());
     Ok(CommandOutput {
-        success: parent_success && !timed_out && !output_capture_incomplete,
+        success: parent_success && !timed_out && !cancelled && !output_capture_incomplete,
         code,
         timed_out,
+        cancelled,
         stdout: capture.stdout,
         stderr: capture.stderr,
         stdout_truncated: capture.stdout_truncated || output_capture_incomplete,
         stderr_truncated: capture.stderr_truncated || output_capture_incomplete,
         output_capture_incomplete,
     })
+}
+
+fn cancellation_requested(cancel: Option<&AtomicBool>) -> bool {
+    cancel
+        .map(|signal| signal.load(Ordering::SeqCst))
+        .unwrap_or(false)
 }
 
 fn spawn_pipe_reader<R: Read + Send + 'static>(
@@ -1109,14 +1173,34 @@ fn terminate_process_tree(child: &mut Child) {
 fn acquire_command(
     coordinator: &WorkspaceMutationCoordinator,
     session: &AiSession,
+    cancel: Option<&AtomicBool>,
 ) -> Result<WorkspaceMutationLease, String> {
-    coordinator
-        .acquire(
+    let started = Instant::now();
+    loop {
+        match coordinator.acquire(
             &session.workspace_id,
             &format!("ai:{}", session.client_id),
             WorkspaceOperationKind::Command,
-        )
-        .map_err(|error| error.to_string())
+        ) {
+            Ok(lease) => return Ok(lease),
+            Err(WorkspaceLeaseError::Busy(active)) if cancel.is_some() => {
+                if cancellation_requested(cancel) {
+                    return Err(
+                        "AI command task was cancelled while waiting for workspace ownership."
+                            .into(),
+                    );
+                }
+                if started.elapsed() >= TASK_COORDINATOR_WAIT {
+                    return Err(format!(
+                        "Workspace remained busy with '{}' owned by '{}' beyond the bounded task queue wait.",
+                        active.kind, active.owner
+                    ));
+                }
+                thread::sleep(TASK_COORDINATOR_RETRY);
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
 }
 
 fn record_profile_result<T>(
@@ -1151,8 +1235,11 @@ fn record_command_result(
     run_id: &str,
     started: Instant,
     result: &Result<AiCommandRunResult, String>,
+    cancellation_was_requested: bool,
 ) -> Result<(), String> {
     let (outcome, detail_code) = match result {
+        Err(_) if cancellation_was_requested => ("cancelled", "cancelled"),
+        Ok(run) if run.cancelled => ("cancelled", "cancelled"),
         Ok(run) if run.output_capture_incomplete => ("failed", "output_capture_incomplete"),
         Ok(run) if run.success && run.runtime_cleanup_incomplete => {
             ("failed", "cleanup_incomplete")
@@ -1266,6 +1353,15 @@ mod tests {
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_dir_all(outside);
     }
+    #[test]
+    fn cancellation_signal_is_observed() {
+        let signal = AtomicBool::new(false);
+        assert!(!cancellation_requested(Some(&signal)));
+        signal.store(true, Ordering::SeqCst);
+        assert!(cancellation_requested(Some(&signal)));
+        assert!(!cancellation_requested(None));
+    }
+
     #[test]
     fn bounded_output_marks_truncation_without_exceeding_limit() {
         let mut stored = vec![1, 2];

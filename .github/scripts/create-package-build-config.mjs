@@ -7,6 +7,7 @@ export function createPackageBuildConfig() {
     bundle: {
       active: true,
       resources: ["rclone/**/*"],
+      externalBin: ["binaries/atrisbridge-mcp"],
       icon: [
         "icons/32x32.png",
         "icons/128x128.png",
