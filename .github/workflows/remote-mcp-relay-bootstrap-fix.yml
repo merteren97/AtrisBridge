@@ -21,10 +21,11 @@ jobs:
         with:
           toolchain: 1.97.0
           components: rustfmt
-      - name: Apply relay wiring
+      - name: Apply product wiring
         run: |
           python3 <<'PY'
           from pathlib import Path
+          import re
 
           auth = Path('src-tauri/src/atris_auth.rs')
           text = auth.read_text()
@@ -32,14 +33,9 @@ jobs:
               text = text.replace('use reqwest::{\n', 'use chrono::{DateTime, Duration as ChronoDuration, Utc};\nuse reqwest::{\n', 1)
           if 'RELAY_REFRESH_MARGIN_SECONDS' not in text:
               text = text.replace('const REQUEST_TIMEOUT_SECONDS: u64 = 20;\n', 'const REQUEST_TIMEOUT_SECONDS: u64 = 20;\nconst RELAY_REFRESH_MARGIN_SECONDS: i64 = 120;\n', 1)
-          runtime_old = '''#[derive(Default)]
-          struct AuthRuntime {
-              access_token: Option<String>,
-              volatile_refresh_token: Option<String>,
-              snapshot: Option<AuthSnapshot>,
-          }
-          '''.replace('          ', '')
-          runtime_new = '''#[derive(Default)]
+
+          runtime_re = re.compile(r'#\[derive\(Default\)\]\nstruct AuthRuntime \{.*?\n\}\n', re.S)
+          runtime = '''#[derive(Default)]
           struct AuthRuntime {
               access_token: Option<String>,
               access_token_expires_at: Option<DateTime<Utc>>,
@@ -54,11 +50,11 @@ jobs:
               pub(crate) access_token: String,
           }
           '''.replace('          ', '')
-          if runtime_old not in text:
-              raise SystemExit('AuthRuntime anchor not found')
-          text = text.replace(runtime_old, runtime_new, 1)
+          text, count = runtime_re.subn(runtime, text, count=1)
+          if count != 1:
+              raise SystemExit('AuthRuntime boundary not found')
 
-          block = '''fn commit_session(
+          relay_auth = '''fn commit_session(
               app: &AppHandle,
               state: &AtrisHubAuthState,
               response: DesktopSessionResponse,
@@ -108,10 +104,10 @@ jobs:
               let Some(access_token) = runtime.access_token.as_ref() else {
                   return Ok(None);
               };
-              let Some(expires_at) = runtime.access_token_expires_at else {
+              let Some(expires_at) = runtime.access_token_expires_at.as_ref() else {
                   return Ok(None);
               };
-              if expires_at <= Utc::now() + ChronoDuration::seconds(RELAY_REFRESH_MARGIN_SECONDS) {
+              if *expires_at <= Utc::now() + ChronoDuration::seconds(RELAY_REFRESH_MARGIN_SECONDS) {
                   return Ok(None);
               }
               let user_id = user.id.clone();
@@ -168,7 +164,7 @@ jobs:
           '''.replace('          ', '')
           start = text.index('fn commit_session(')
           end = text.index('\nfn set_runtime_snapshot(', start)
-          text = text[:start] + block + text[end+1:]
+          text = text[:start] + relay_auth + text[end + 1:]
           auth.write_text(text)
 
           ipc = Path('src-tauri/src/local_mcp_ipc.rs')
@@ -180,56 +176,42 @@ jobs:
           text = lib.read_text()
           if 'mod remote_mcp_relay;' not in text:
               text = text.replace('mod restore;\n', 'mod remote_mcp_relay;\nmod restore;\n', 1)
-          anchor = '''            if let Err(error) = local_mcp_ipc::setup(app.handle()) {
-              eprintln!("AtrisBridge local MCP authority is unavailable: {error}");
-          }
-          '''.replace('          ', '')
-          if anchor not in text:
-              raise SystemExit('local MCP setup anchor not found')
-          text = text.replace(anchor, anchor + '            remote_mcp_relay::setup(app.handle());\n', 1)
+          if 'remote_mcp_relay::setup(app.handle());' not in text:
+              local_setup = text.index('if let Err(error) = local_mcp_ipc::setup(app.handle()) {')
+              ok = text.index('            Ok(())', local_setup)
+              text = text[:ok] + '            remote_mcp_relay::setup(app.handle());\n' + text[ok:]
           lib.write_text(text)
 
           cargo = Path('src-tauri/Cargo.toml')
-          text = cargo.read_text()
-          for line in [
-              'futures-util = "0.3.31"',
-              'sha2 = "0.10.9"',
-              'tokio = { version = "1", features = ["sync", "time"] }',
-              'tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }',
+          text = cargo.read_text().rstrip() + '\n'
+          for key, line in [
+              ('futures-util', 'futures-util = "0.3.31"'),
+              ('sha2', 'sha2 = "0.10.9"'),
+              ('tokio', 'tokio = { version = "1", features = ["net", "sync", "time"] }'),
+              ('tokio-tungstenite', 'tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }'),
           ]:
-              if line.split(' = ')[0] + ' =' not in text:
-                  text += '\n' + line
-          cargo.write_text(text.rstrip() + '\n')
+              if not any(line0.strip().startswith(key + ' =') for line0 in text.splitlines()):
+                  text += line + '\n'
+          cargo.write_text(text)
 
           relay = Path('src-tauri/src/remote_mcp_relay.rs')
           text = relay.read_text()
           text = text.replace('mcp.remote.87daa3985036671953760490bb3d0b1c', 'mcp.remote.b44ea687b506d5ca725c434cbe69d0cd')
-          old = '''                        let worker_app = app.clone();
-                          let worker_credential = credential.clone();
-                          let worker_tx = outgoing_tx.clone();
-                          tauri::async_runtime::spawn(async move {
-          '''.replace('          ', '')
-          new = '''                        let worker_app = app.clone();
-                          let worker_credential = credential.clone();
-                          let worker_tx = outgoing_tx.clone();
-                          let worker_request_id = request.request_id.clone();
-                          let worker_reply_to = request.reply_to.clone();
-                          tauri::async_runtime::spawn(async move {
-          '''.replace('          ', '')
-          if old not in text:
-              raise SystemExit('worker anchor not found')
-          text = text.replace(old, new, 1)
+          if 'let worker_request_id = request.request_id.clone();' not in text:
+              marker = '                        let worker_tx = outgoing_tx.clone();\n'
+              pos = text.index(marker) + len(marker)
+              text = text[:pos] + '                        let worker_request_id = request.request_id.clone();\n                        let worker_reply_to = request.reply_to.clone();\n' + text[pos:]
           start = text.index('                            let value = match response {')
           end = text.index('                            let _ = send_json(&worker_tx, value).await;', start)
           replacement = '''                            let value = match response {
-                                  Ok(value) => value,
-                                  Err(error) => relay_error_response_parts(
-                                      &worker_request_id,
-                                      &worker_reply_to,
-                                      "desktop_worker_failed",
-                                      &format!("Remote MCP worker failed: {error}"),
-                                  ),
-                              };
+                                Ok(value) => value,
+                                Err(error) => relay_error_response_parts(
+                                    &worker_request_id,
+                                    &worker_reply_to,
+                                    "desktop_worker_failed",
+                                    &format!("Remote MCP worker failed: {error}"),
+                                ),
+                            };
           '''.replace('          ', '')
           text = text[:start] + replacement + text[end:]
           relay.write_text(text)
@@ -240,9 +222,9 @@ jobs:
           cargo fmt --all
           cargo check --lib
           cargo test --lib
-      - name: Commit generated lockfile and remove bootstrap helpers
+      - name: Commit clean product tree
         run: |
-          rm -f .github/workflows/remote-mcp-relay-bootstrap.yml .github/workflows/remote-mcp-relay-bootstrap-fix.yml
+          rm -f .github/workflows/remote-mcp-relay-bootstrap.yml .github/workflows/remote-mcp-relay-bootstrap-fix.yml .github/workflows/remote-mcp-relay-bootstrap-final.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
