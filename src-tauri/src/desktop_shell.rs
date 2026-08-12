@@ -8,15 +8,13 @@ use tauri::{
 
 const TRAY_ID: &str = "atrisbridge-main";
 const SHOW_ID: &str = "tray-show";
-const HIDE_ID: &str = "tray-hide";
 const QUIT_ID: &str = "tray-quit";
 static CLOSE_TO_TRAY: AtomicBool = AtomicBool::new(false);
 
 pub fn setup(app: &mut App) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, SHOW_ID, "Open AtrisBridge", true, None::<&str>)?;
-    let hide = MenuItem::with_id(app, HIDE_ID, "Hide to tray", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, QUIT_ID, "Quit AtrisBridge", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &hide, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &quit])?;
 
     let mut tray = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
@@ -24,7 +22,6 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
         .tooltip("AtrisBridge — project continuity")
         .on_menu_event(|app, event| match event.id().as_ref() {
             SHOW_ID => show_main_window(app),
-            HIDE_ID => hide_main_window(app),
             QUIT_ID => app.exit(0),
             _ => {}
         })
@@ -45,13 +42,21 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
         tray = tray.icon(icon.clone());
     }
 
-    tray.build(app)?;
+    let tray = tray.build(app)?;
+    // Quit-on-close remains the safe default. The persisted frontend preference
+    // is synchronized immediately after hydration and enables the tray only when requested.
+    tray.set_visible(false)?;
     Ok(())
 }
 
 #[tauri::command]
-pub fn set_close_to_tray(enabled: bool) {
+pub fn set_close_to_tray(app: AppHandle, enabled: bool) -> Result<(), String> {
     CLOSE_TO_TRAY.store(enabled, Ordering::SeqCst);
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        tray.set_visible(enabled)
+            .map_err(|error| format!("Could not update AtrisBridge tray visibility: {error}"))?;
+    }
+    Ok(())
 }
 
 pub fn handle_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) {
@@ -74,11 +79,5 @@ fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
-    }
-}
-
-fn hide_main_window<R: Runtime>(app: &AppHandle<R>) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.hide();
     }
 }

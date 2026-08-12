@@ -1,61 +1,18 @@
-import {
-  Activity,
-  AlertTriangle,
-  Bell,
-  BellOff,
-  CheckCircle2,
-  ChevronDown,
-  ChevronUp,
-  LoaderCircle,
-  ShieldAlert,
-} from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, CheckCircle2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ACTIVITY_ALERTS_EVENT, activityAlertsEnabled } from "./activity-preferences";
 import {
   getContinuousSyncStatus,
-  listJournalSummaries,
   listWorkspaces,
 } from "./lib/bridge";
-import type { ContinuousSyncStatus, JournalSummary, Workspace } from "./types";
+import type { ContinuousSyncStatus } from "./types";
 import "./desktop-activity.css";
-
-type ActivityRow = {
-  workspace: Workspace;
-  status: ContinuousSyncStatus;
-};
 
 type Toast = {
   kind: "success" | "warning";
   title: string;
   message: string;
 };
-
-const ALERTS_STORAGE_KEY = "atrisbridge.desktopAlerts";
-
-function stateLabel(status: ContinuousSyncStatus) {
-  switch (status.state) {
-    case "debouncing":
-      return "Changes queued";
-    case "running":
-      return "Syncing";
-    case "attention":
-      return "Needs attention";
-    case "error":
-      return "Sync error";
-    case "disabled":
-      return "Paused";
-    default:
-      return "Watching";
-  }
-}
-
-function stateIcon(status: ContinuousSyncStatus) {
-  if (status.state === "running" || status.state === "debouncing") {
-    return <LoaderCircle size={14} className="activity-spin" />;
-  }
-  if (status.state === "attention") return <ShieldAlert size={14} />;
-  if (status.state === "error") return <AlertTriangle size={14} />;
-  return <CheckCircle2 size={14} />;
-}
 
 function latestMessage(status: ContinuousSyncStatus) {
   if (status.lastMessage) return status.lastMessage;
@@ -66,22 +23,19 @@ function latestMessage(status: ContinuousSyncStatus) {
 }
 
 export default function DesktopActivityCenter() {
-  const [open, setOpen] = useState(false);
-  const [rows, setRows] = useState<ActivityRow[]>([]);
-  const [journals, setJournals] = useState<JournalSummary[]>([]);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
-  const [alertsEnabled, setAlertsEnabled] = useState(
-    () => localStorage.getItem(ALERTS_STORAGE_KEY) === "1",
-  );
   const previousStatuses = useRef<Map<string, ContinuousSyncStatus>>(new Map());
   const notificationKeys = useRef<Set<string>>(new Set());
   const initialized = useRef(false);
-  const alertsEnabledRef = useRef(alertsEnabled);
+  const alertsEnabledRef = useRef(activityAlertsEnabled());
 
   useEffect(() => {
-    alertsEnabledRef.current = alertsEnabled;
-  }, [alertsEnabled]);
+    const syncPreference = () => {
+      alertsEnabledRef.current = activityAlertsEnabled();
+    };
+    window.addEventListener(ACTIVITY_ALERTS_EVENT, syncPreference);
+    return () => window.removeEventListener(ACTIVITY_ALERTS_EVENT, syncPreference);
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -103,17 +57,13 @@ export default function DesktopActivityCenter() {
 
     const refresh = async () => {
       try {
-        const [workspaces, journalSummaries] = await Promise.all([
-          listWorkspaces(),
-          listJournalSummaries(),
-        ]);
+        const workspaces = await listWorkspaces();
         const statusRows = await Promise.all(
           workspaces.map(async (workspace) => ({
             workspace,
             status: await getContinuousSyncStatus(workspace.id),
           })),
         );
-
         if (disposed) return;
 
         if (initialized.current) {
@@ -155,13 +105,8 @@ export default function DesktopActivityCenter() {
           statusRows.map((row) => [row.workspace.id, row.status]),
         );
         initialized.current = true;
-        setRows(statusRows);
-        setJournals(journalSummaries);
-        setLoadError(null);
-      } catch (error) {
-        if (!disposed) {
-          setLoadError(error instanceof Error ? error.message : String(error));
-        }
+      } catch {
+        // The Activity page surfaces live polling errors. Background monitoring stays silent.
       }
     };
 
@@ -174,146 +119,17 @@ export default function DesktopActivityCenter() {
   }, []);
 
   useEffect(() => {
-    if (!toast) return;
+    if (!toast) return undefined;
     const timer = window.setTimeout(() => setToast(null), 5200);
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  const summary = useMemo(() => {
-    const active = rows.filter((row) =>
-      row.status.state === "running" || row.status.state === "debouncing",
-    ).length;
-    const runtimeActive = rows.filter((row) => row.status.runtimeActive).length;
-    const stateIssues = rows.filter((row) =>
-      row.status.state === "attention" || row.status.state === "error",
-    ).length;
-    const queued = journals.reduce((total, journal) => total + journal.pendingOperations, 0);
-    const conflicts = journals.reduce((total, journal) => total + journal.conflicts, 0);
-    return { active, runtimeActive, issues: stateIssues + conflicts, queued, conflicts };
-  }, [rows, journals]);
-
-  const toggleAlerts = async () => {
-    if (alertsEnabled) {
-      localStorage.setItem(ALERTS_STORAGE_KEY, "0");
-      setAlertsEnabled(false);
-      return;
-    }
-
-    if ("Notification" in window && Notification.permission === "default") {
-      const permission = await Notification.requestPermission();
-      if (permission === "denied") {
-        setToast({
-          kind: "warning",
-          title: "Desktop alerts are blocked",
-          message: "AtrisBridge will continue to show in-app activity alerts.",
-        });
-        return;
-      }
-    }
-
-    localStorage.setItem(ALERTS_STORAGE_KEY, "1");
-    setAlertsEnabled(true);
-    setToast({
-      kind: "success",
-      title: "Desktop alerts enabled",
-      message: "AtrisBridge will surface completed cycles and items that need attention.",
-    });
-  };
-
+  if (!toast) return null;
   return (
-    <>
-      <section className={`desktop-activity ${open ? "open" : ""}`} aria-label="AtrisBridge activity">
-        {open && (
-          <div className="activity-panel">
-            <div className="activity-panel-heading">
-              <div className="activity-heading-copy">
-                <span className="activity-icon"><Activity size={15} /></span>
-                <div>
-                  <strong>Sync activity</strong>
-                  <small>{summary.runtimeActive} watcher{summary.runtimeActive === 1 ? "" : "s"} active</small>
-                </div>
-              </div>
-              <button
-                className={`activity-alert-toggle ${alertsEnabled ? "enabled" : ""}`}
-                onClick={() => void toggleAlerts()}
-                title={alertsEnabled ? "Disable desktop alerts" : "Enable desktop alerts"}
-                type="button"
-              >
-                {alertsEnabled ? <Bell size={13} /> : <BellOff size={13} />}
-                {alertsEnabled ? "Alerts on" : "Alerts off"}
-              </button>
-            </div>
-
-            <div className="activity-metrics">
-              <div><small>Active</small><strong>{summary.active}</strong></div>
-              <div><small>Queued</small><strong>{summary.queued}</strong></div>
-              <div className={summary.issues > 0 ? "attention" : ""}>
-                <small>Attention</small><strong>{summary.issues}</strong>
-              </div>
-            </div>
-
-            {loadError && <div className="activity-load-error">{loadError}</div>}
-
-            <div className="activity-list">
-              {rows.length === 0 && !loadError ? (
-                <div className="activity-empty">Add a workspace to start monitoring synchronization activity.</div>
-              ) : (
-                rows.map(({ workspace, status }) => (
-                  <div className={`activity-row state-${status.state}`} key={workspace.id}>
-                    <div className="activity-row-icon">{stateIcon(status)}</div>
-                    <div className="activity-row-copy">
-                      <div className="activity-row-title">
-                        <strong>{workspace.name}</strong>
-                        <span>{stateLabel(status)}</span>
-                      </div>
-                      <small>{latestMessage(status)}</small>
-                      {(status.state === "running" || status.state === "debouncing") && (
-                        <div className="activity-progress" aria-label="Synchronization in progress">
-                          <span />
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-
-            {summary.conflicts > 0 && (
-              <div className="activity-conflict-note">
-                <AlertTriangle size={13} />
-                {summary.conflicts} unresolved conflict{summary.conflicts === 1 ? "" : "s"} require review.
-              </div>
-            )}
-          </div>
-        )}
-
-        <button
-          type="button"
-          className={`activity-trigger ${summary.issues > 0 ? "attention" : summary.active > 0 ? "busy" : ""}`}
-          onClick={() => setOpen((value) => !value)}
-          aria-expanded={open}
-        >
-          <Activity size={14} />
-          <span>
-            {summary.issues > 0
-              ? `${summary.issues} need attention`
-              : summary.active > 0
-                ? `${summary.active} sync active`
-                : summary.queued > 0
-                  ? `${summary.queued} queued`
-                  : "Sync activity"}
-          </span>
-          {open ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
-        </button>
-      </section>
-
-      {toast && (
-        <div className={`activity-toast ${toast.kind}`} role="status">
-          {toast.kind === "warning" ? <AlertTriangle size={15} /> : <CheckCircle2 size={15} />}
-          <div><strong>{toast.title}</strong><small>{toast.message}</small></div>
-          <button type="button" onClick={() => setToast(null)} aria-label="Dismiss notification">×</button>
-        </div>
-      )}
-    </>
+    <div className={`activity-toast ${toast.kind}`} role="status" aria-live="polite">
+      {toast.kind === "warning" ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
+      <div><strong>{toast.title}</strong><small>{toast.message}</small></div>
+      <button type="button" onClick={() => setToast(null)} aria-label="Dismiss notification">×</button>
+    </div>
   );
 }

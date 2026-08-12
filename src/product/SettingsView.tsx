@@ -1,5 +1,52 @@
-import { Cloud, CloudCog, Database, FolderSync, HardDrive, RefreshCw, ShieldCheck, SlidersHorizontal, Trash2, Unplug } from "lucide-react";
+import { useState } from "react";
+import {
+  Bell,
+  BellOff,
+  Cloud,
+  CloudCog,
+  Database,
+  Download,
+  FolderSync,
+  HardDrive,
+  Minimize2,
+  Power,
+  RefreshCw,
+  Rocket,
+  ShieldCheck,
+  SlidersHorizontal,
+  Trash2,
+  Unplug,
+} from "lucide-react";
+import { activityAlertsEnabled, setActivityAlertsEnabled } from "../activity-preferences";
+import { useUpdater, type UpdateBehavior, type UpdateStatus } from "../UpdateCenter";
 import type { ProductModel } from "./useProductModel";
+
+function updateStatusLabel(status: UpdateStatus) {
+  switch (status) {
+    case "checking": return "Checking…";
+    case "available": return "Update available";
+    case "up-to-date": return "Up to date";
+    case "downloading": return "Downloading…";
+    case "installing": return "Installing…";
+    case "error": return "Update error";
+    default: return "Ready";
+  }
+}
+
+const updateOptions: Array<{ value: UpdateBehavior; title: string; description: string; icon: typeof Bell }> = [
+  {
+    value: "notify",
+    title: "Notify before installing",
+    description: "Check on startup and show a notification only when a newer signed AtrisBridge release is available.",
+    icon: Bell,
+  },
+  {
+    value: "automatic",
+    title: "Install automatically",
+    description: "Download and install signed updates automatically. AtrisBridge waits for active sync cycles before restarting.",
+    icon: Rocket,
+  },
+];
 
 export default function SettingsView({ model }: { model: ProductModel }) {
   const {
@@ -13,32 +60,56 @@ export default function SettingsView({ model }: { model: ProductModel }) {
     handleForgetCloud,
     refreshCloud,
   } = model;
+  const updater = useUpdater();
+  const [alertsEnabled, setAlertsEnabledState] = useState(activityAlertsEnabled);
+
+  async function setAlerts(next: boolean) {
+    if (next && "Notification" in window && Notification.permission === "default") {
+      const permission = await Notification.requestPermission();
+      if (permission === "denied") return;
+    }
+    setActivityAlertsEnabled(next);
+    setAlertsEnabledState(next);
+  }
+
+  const updateBusy = updater.status === "checking" || updater.status === "downloading" || updater.status === "installing";
 
   return (
     <div className="ab-view ab-settings-layout">
       <aside className="ab-settings-index" aria-label="Settings categories">
         <a href="#general"><SlidersHorizontal size={16} /> General</a>
         <a href="#connections"><CloudCog size={16} /> Connections</a>
+        <a href="#updates"><RefreshCw size={16} /> Updates</a>
+        <a href="#notifications"><Bell size={16} /> Notifications</a>
         <a href="#security"><ShieldCheck size={16} /> Security</a>
         <a href="#advanced"><HardDrive size={16} /> Advanced</a>
       </aside>
 
-      <div className="ab-settings-sheet">
-        <section className="ab-settings-brand">
-          <img src="/brand/atrisbridge-mark.svg" alt="AtrisBridge" />
-          <div><span className="ab-kicker">AtrisBridge</span><h2>Project continuity, without the noise.</h2><p>Desktop behavior, cloud transport and safety controls live here. Technical diagnostics stay out of the primary workspace experience.</p></div>
-        </section>
+      <div className="ab-settings-sheet ab-settings-sheet-refined">
+        <header className="ab-settings-intro">
+          <span className="ab-kicker">Application settings</span>
+          <h2>AtrisBridge preferences</h2>
+          <p>Control window behavior, cloud connections, notifications, updates and local protection without leaving the desktop workflow.</p>
+        </header>
 
         <section id="general" className="ab-settings-section">
-          <header><span className="ab-kicker">General</span><h2>Desktop behavior</h2></header>
-          <div className="ab-setting-row">
-            <div><strong>Keep AtrisBridge running in the tray</strong><p>Continue background synchronization after closing the main window. Leave this off if closing the window should fully quit AtrisBridge.</p></div>
-            <label className="ab-toggle"><input type="checkbox" checked={closeToTray} onChange={(event) => setCloseToTray(event.target.checked)} /><span /></label>
+          <header><span className="ab-kicker">General</span><h2>Window &amp; background behavior</h2><p>Choose what the Windows close button should do.</p></header>
+          <div className="ab-choice-grid two">
+            <button type="button" className={!closeToTray ? "ab-choice-card active" : "ab-choice-card"} onClick={() => setCloseToTray(false)} aria-pressed={!closeToTray}>
+              <span className="ab-choice-icon"><Power size={18} /></span>
+              <span className="ab-choice-copy"><strong>Quit AtrisBridge</strong><small>Close the window and stop the desktop process completely.</small></span>
+              {!closeToTray && <span className="ab-choice-active">Active</span>}
+            </button>
+            <button type="button" className={closeToTray ? "ab-choice-card active" : "ab-choice-card"} onClick={() => setCloseToTray(true)} aria-pressed={closeToTray}>
+              <span className="ab-choice-icon"><Minimize2 size={18} /></span>
+              <span className="ab-choice-copy"><strong>Minimize to tray</strong><small>Hide the window while background synchronization keeps running.</small></span>
+              {closeToTray && <span className="ab-choice-active">Active</span>}
+            </button>
           </div>
         </section>
 
         <section id="connections" className="ab-settings-section">
-          <header><span className="ab-kicker">Connections</span><h2>Google Drive</h2></header>
+          <header><span className="ab-kicker">Connections</span><h2>Google Drive</h2><p>Remote transport is configured independently from your AtrisHub account.</p></header>
           <div className="ab-setting-row connection">
             <span className={`ab-settings-provider ${googleDrive?.sessionActive ? "connected" : ""}`}><Cloud size={20} /></span>
             <div><strong>{googleDrive?.accountLabel ?? googleDrive?.displayName ?? "Google Drive"}</strong><p>{googleDrive?.credentialPersisted ? "Credential is protected by the operating-system secure vault." : googleDrive?.sessionActive ? "Connected for this session. Secure persistence is unavailable." : "Connect only when you want remote transport for a workspace."}</p></div>
@@ -50,10 +121,45 @@ export default function SettingsView({ model }: { model: ProductModel }) {
           </div>
         </section>
 
+        <section id="updates" className="ab-settings-section">
+          <header className="ab-settings-section-heading-row">
+            <div><span className="ab-kicker">Updates</span><h2>Application updates</h2><p>Signed releases are checked through the configured AtrisBridge update channel.</p></div>
+            <div className="ab-update-badges"><span>v{updater.runtime?.currentVersion ?? "—"}</span><span className={updater.status === "error" ? "error" : ""}>{updateStatusLabel(updater.status)}</span></div>
+          </header>
+          <div className="ab-choice-grid two">
+            {updateOptions.map((option) => {
+              const Icon = option.icon;
+              const active = updater.behavior === option.value;
+              return (
+                <button type="button" key={option.value} className={active ? "ab-choice-card active" : "ab-choice-card"} onClick={() => updater.setBehavior(option.value)} aria-pressed={active}>
+                  <span className="ab-choice-icon"><Icon size={18} /></span>
+                  <span className="ab-choice-copy"><strong>{option.title}</strong><small>{option.description}</small></span>
+                  {active && <span className="ab-choice-active">Active</span>}
+                </button>
+              );
+            })}
+          </div>
+          <div className="ab-setting-row ab-update-setting-row">
+            <div><strong>{updater.update ? `AtrisBridge ${updater.update.version} is available` : "Update channel"}</strong><p>{updater.deferredAutomatic ? "Automatic installation is waiting for active synchronization to become idle." : updater.error ? updater.error : updater.runtime?.configured ? `${updater.runtime.channel} channel · current ${updater.runtime.currentVersion}` : "Updater signing is not configured in this development build."}</p></div>
+            <div className="ab-settings-actions">
+              <button className="ab-button secondary" disabled={updateBusy || !updater.runtime?.configured} onClick={() => void updater.checkForUpdates(true)}><RefreshCw className={updater.status === "checking" ? "spin" : ""} size={15} /> Check now</button>
+              {updater.update && updater.status === "available" && <button className="ab-button primary" onClick={() => void updater.installAvailableUpdate(false)}><Download size={15} /> Update to {updater.update.version}</button>}
+            </div>
+          </div>
+        </section>
+
+        <section id="notifications" className="ab-settings-section">
+          <header><span className="ab-kicker">Notifications</span><h2>Activity alerts</h2><p>Live synchronization remains visible in Activity. Desktop notifications are optional.</p></header>
+          <div className="ab-setting-row">
+            <div className="ab-runtime-copy"><span className={`ab-runtime-icon ${alertsEnabled ? "connected" : ""}`}>{alertsEnabled ? <Bell size={18} /> : <BellOff size={18} />}</span><div><strong>Desktop sync notifications</strong><p>Notify when a sync finishes or when a workspace needs attention while AtrisBridge is in the background.</p></div></div>
+            <label className="ab-toggle"><input type="checkbox" checked={alertsEnabled} onChange={(event) => void setAlerts(event.target.checked)} /><span /></label>
+          </div>
+        </section>
+
         <section id="security" className="ab-settings-section">
           <header><span className="ab-kicker">Security</span><h2>Protection model</h2></header>
           <div className="ab-security-list">
-            <div><span><ShieldCheck size={18} /></span><div><strong>OS secure vault</strong><p>Persisted provider credentials stay outside frontend storage.</p></div></div>
+            <div><span><ShieldCheck size={18} /></span><div><strong>OS secure vault</strong><p>Persisted provider and workspace encryption credentials stay outside frontend storage.</p></div></div>
             <div><span><Database size={18} /></span><div><strong>Durable local journal</strong><p>Changes and synchronization decisions remain inspectable before remote execution.</p></div></div>
             <div><span><FolderSync size={18} /></span><div><strong>Workspace-scoped transport</strong><p>Each project uses an explicit remote folder mapping instead of an implicit global destination.</p></div></div>
           </div>

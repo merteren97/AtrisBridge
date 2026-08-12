@@ -11,6 +11,7 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
+import AtrisAccount from "../AtrisAccount";
 import ActivityView from "./ActivityView";
 import OverviewView from "./OverviewView";
 import SettingsView from "./SettingsView";
@@ -100,6 +101,7 @@ export default function ProductApp() {
           <button className={view === "settings" ? "ab-settings-button active" : "ab-settings-button"} onClick={() => setView("settings")}>
             <Settings size={18} /><span>Settings</span>
           </button>
+          <AtrisAccount />
         </div>
       </aside>
 
