@@ -80,8 +80,8 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(UPDATE_BEHAVIOR_KEY, next);
     behaviorRef.current = next;
     setBehaviorState(next);
-    if (next === "notify") setDeferredAutomatic(false);
-  }, []);
+    setDeferredAutomatic(next === "automatic" && Boolean(update));
+  }, [update]);
 
   const installAvailableUpdate = useCallback(async (automatic = false) => {
     if (installing.current || !update) return;
@@ -150,16 +150,14 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
       }
 
       setStatus("available");
-      if (behaviorRef.current === "automatic") {
-        window.setTimeout(() => void installAvailableUpdate(true), 0);
-      }
+      if (behaviorRef.current === "automatic") setDeferredAutomatic(true);
       return next;
     } catch (reason) {
       setStatus("error");
       setError(errorMessage(reason));
       return null;
     }
-  }, [installAvailableUpdate, runtime, status, update]);
+  }, [runtime, status, update]);
 
   useEffect(() => {
     if (initialized.current) return;
@@ -179,6 +177,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!deferredAutomatic || behavior !== "automatic" || !update || status !== "available") return undefined;
+    void installAvailableUpdate(true);
     const timer = window.setInterval(() => void installAvailableUpdate(true), 5000);
     return () => window.clearInterval(timer);
   }, [behavior, deferredAutomatic, installAvailableUpdate, status, update]);
