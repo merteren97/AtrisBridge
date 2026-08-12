@@ -9,6 +9,7 @@ mod continuous_commands;
 mod database;
 mod desktop_shell;
 mod encryption;
+mod google_drive_identity;
 mod models;
 mod provider_sessions;
 mod provider_storage;
