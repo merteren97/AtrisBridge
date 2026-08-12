@@ -1,6 +1,7 @@
 mod ai_artifact_crypto;
 mod ai_changeset;
 mod ai_gateway;
+mod ai_git;
 mod ai_workspace;
 mod app_updater;
 mod atris_auth;
@@ -47,6 +48,7 @@ pub fn run() {
             restore::recover_interrupted_restores(app.handle()).map_err(std::io::Error::other)?;
             sync::recover_interrupted_syncs(app.handle()).map_err(std::io::Error::other)?;
             ai_gateway::initialize(app.handle()).map_err(std::io::Error::other)?;
+            ai_git::initialize(app.handle()).map_err(std::io::Error::other)?;
             ai_changeset::initialize(app.handle()).map_err(std::io::Error::other)?;
             continuous::initialize(app.handle()).map_err(std::io::Error::other)?;
             Ok(())
@@ -68,6 +70,19 @@ pub fn run() {
             ai_gateway::close_ai_session,
             ai_gateway::list_ai_sessions,
             ai_gateway::list_ai_audit,
+            ai_git::provision_ai_worktree,
+            ai_git::list_ai_worktrees,
+            ai_git::discard_ai_worktree,
+            ai_git::ai_git_status,
+            ai_git::ai_git_diff,
+            ai_git::ai_git_log,
+            ai_git::ai_git_branches,
+            ai_git::ai_git_stage,
+            ai_git::ai_git_unstage,
+            ai_git::ai_git_commit,
+            ai_git::ai_git_create_branch,
+            ai_git::ai_git_revert,
+            ai_git::ai_git_push,
             desktop_shell::set_close_to_tray,
             ai_workspace::ai_file_stat,
             ai_workspace::ai_read_text_file,
