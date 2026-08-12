@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   Bell,
   BellOff,
+  Bot,
   Cloud,
   CloudCog,
   Database,
@@ -17,6 +18,7 @@ import {
   Trash2,
   Unplug,
 } from "lucide-react";
+import AiGatewayPanel from "../AiGatewayPanel";
 import { activityAlertsEnabled, setActivityAlertsEnabled } from "../activity-preferences";
 import { useUpdater, type UpdateBehavior, type UpdateStatus } from "../UpdateCenter";
 import type { ProductModel } from "./useProductModel";
@@ -79,6 +81,7 @@ export default function SettingsView({ model }: { model: ProductModel }) {
       <aside className="ab-settings-index" aria-label="Settings categories">
         <a href="#general"><SlidersHorizontal size={16} /> General</a>
         <a href="#connections"><CloudCog size={16} /> Connections</a>
+        <a href="#ai-clients"><Bot size={16} /> AI clients</a>
         <a href="#updates"><RefreshCw size={16} /> Updates</a>
         <a href="#notifications"><Bell size={16} /> Notifications</a>
         <a href="#security"><ShieldCheck size={16} /> Security</a>
@@ -89,7 +92,7 @@ export default function SettingsView({ model }: { model: ProductModel }) {
         <header className="ab-settings-intro">
           <span className="ab-kicker">Application settings</span>
           <h2>AtrisBridge preferences</h2>
-          <p>Control window behavior, cloud connections, notifications, updates and local protection without leaving the desktop workflow.</p>
+          <p>Control window behavior, cloud connections, AI workspace access, notifications, updates and local protection without leaving the desktop workflow.</p>
         </header>
 
         <section id="general" className="ab-settings-section">
@@ -120,6 +123,8 @@ export default function SettingsView({ model }: { model: ProductModel }) {
             </div>
           </div>
         </section>
+
+        <AiGatewayPanel workspaces={model.workspaces} onError={model.setError} />
 
         <section id="updates" className="ab-settings-section">
           <header className="ab-settings-section-heading-row">

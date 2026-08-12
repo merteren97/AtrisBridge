@@ -16,7 +16,10 @@ mod database;
 mod desktop_shell;
 mod encryption;
 mod google_drive_identity;
+mod local_mcp_clients;
+mod local_mcp_commands;
 mod local_mcp_ipc;
+mod local_mcp_probe;
 mod mcp_core;
 mod mcp_dispatch;
 mod models;
@@ -106,6 +109,10 @@ pub fn run() {
             ai_task::get_ai_task_result,
             ai_task::cancel_ai_task,
             mcp_core::ai_mcp_core_manifest,
+            local_mcp_commands::list_local_mcp_clients,
+            local_mcp_commands::register_local_mcp_client,
+            local_mcp_commands::unregister_local_mcp_client,
+            local_mcp_commands::test_local_mcp_client_connection,
             desktop_shell::set_close_to_tray,
             ai_workspace::ai_file_stat,
             ai_workspace::ai_read_text_file,
