@@ -1,4 +1,7 @@
+mod ai_artifact_crypto;
+mod ai_changeset;
 mod ai_gateway;
+mod ai_workspace;
 mod app_updater;
 mod atris_auth;
 mod backup;
@@ -44,6 +47,7 @@ pub fn run() {
             restore::recover_interrupted_restores(app.handle()).map_err(std::io::Error::other)?;
             sync::recover_interrupted_syncs(app.handle()).map_err(std::io::Error::other)?;
             ai_gateway::initialize(app.handle()).map_err(std::io::Error::other)?;
+            ai_changeset::initialize(app.handle()).map_err(std::io::Error::other)?;
             continuous::initialize(app.handle()).map_err(std::io::Error::other)?;
             Ok(())
         })
@@ -65,6 +69,14 @@ pub fn run() {
             ai_gateway::list_ai_sessions,
             ai_gateway::list_ai_audit,
             desktop_shell::set_close_to_tray,
+            ai_workspace::ai_file_stat,
+            ai_workspace::ai_read_text_file,
+            ai_workspace::ai_search_workspace,
+            ai_changeset::prepare_ai_changeset,
+            ai_changeset::execute_ai_changeset,
+            ai_changeset::undo_ai_changeset,
+            ai_changeset::get_ai_changeset,
+            ai_changeset::list_ai_changesets,
             commands::list_workspaces,
             commands::add_workspace,
             continuous_commands::guarded_remove_workspace,
