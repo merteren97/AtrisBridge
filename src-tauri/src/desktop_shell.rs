@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -8,6 +10,7 @@ const TRAY_ID: &str = "atrisbridge-main";
 const SHOW_ID: &str = "tray-show";
 const HIDE_ID: &str = "tray-hide";
 const QUIT_ID: &str = "tray-quit";
+static CLOSE_TO_TRAY: AtomicBool = AtomicBool::new(false);
 
 pub fn setup(app: &mut App) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, SHOW_ID, "Open AtrisBridge", true, None::<&str>)?;
@@ -18,7 +21,7 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
     let mut tray = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .tooltip("AtrisBridge — project sync is still running")
+        .tooltip("AtrisBridge — project continuity")
         .on_menu_event(|app, event| match event.id().as_ref() {
             SHOW_ID => show_main_window(app),
             HIDE_ID => hide_main_window(app),
@@ -46,14 +49,21 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
     Ok(())
 }
 
+#[tauri::command]
+pub fn set_close_to_tray(enabled: bool) {
+    CLOSE_TO_TRAY.store(enabled, Ordering::SeqCst);
+}
+
 pub fn handle_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) {
     if window.label() != "main" {
         return;
     }
 
     if let WindowEvent::CloseRequested { api, .. } = event {
-        api.prevent_close();
-        let _ = window.hide();
+        if CLOSE_TO_TRAY.load(Ordering::SeqCst) {
+            api.prevent_close();
+            let _ = window.hide();
+        }
     }
 }
 
