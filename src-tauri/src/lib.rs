@@ -1,5 +1,6 @@
 mod ai_artifact_crypto;
 mod ai_changeset;
+mod ai_command;
 mod ai_gateway;
 mod ai_git;
 mod ai_workspace;
@@ -49,6 +50,7 @@ pub fn run() {
             sync::recover_interrupted_syncs(app.handle()).map_err(std::io::Error::other)?;
             ai_gateway::initialize(app.handle()).map_err(std::io::Error::other)?;
             ai_git::initialize(app.handle()).map_err(std::io::Error::other)?;
+            ai_command::initialize(app.handle()).map_err(std::io::Error::other)?;
             ai_changeset::initialize(app.handle()).map_err(std::io::Error::other)?;
             continuous::initialize(app.handle()).map_err(std::io::Error::other)?;
             Ok(())
@@ -83,6 +85,8 @@ pub fn run() {
             ai_git::ai_git_create_branch,
             ai_git::ai_git_revert,
             ai_git::ai_git_push,
+            ai_command::list_ai_command_profiles,
+            ai_command::run_ai_command,
             desktop_shell::set_close_to_tray,
             ai_workspace::ai_file_stat,
             ai_workspace::ai_read_text_file,
