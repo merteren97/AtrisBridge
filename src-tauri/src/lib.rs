@@ -3,6 +3,7 @@ mod ai_changeset;
 mod ai_command;
 mod ai_gateway;
 mod ai_git;
+mod ai_task;
 mod ai_workspace;
 mod app_updater;
 mod atris_auth;
@@ -15,6 +16,7 @@ mod database;
 mod desktop_shell;
 mod encryption;
 mod google_drive_identity;
+mod mcp_core;
 mod models;
 mod provider_sessions;
 mod provider_storage;
@@ -28,6 +30,7 @@ mod sync_recovery;
 mod transport;
 mod workspace_coordinator;
 
+use ai_task::AiTaskManager;
 use atris_auth::AtrisHubAuthState;
 use continuous::ContinuousSyncManager;
 use provider_sessions::ProviderSessionStore;
@@ -40,6 +43,7 @@ pub fn run() {
         .manage(ContinuousSyncManager::default())
         .manage(WorkspaceMutationCoordinator::default())
         .manage(AtrisHubAuthState::default())
+        .manage(AiTaskManager::default())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             app_updater::setup(app)?;
@@ -51,6 +55,7 @@ pub fn run() {
             ai_gateway::initialize(app.handle()).map_err(std::io::Error::other)?;
             ai_git::initialize(app.handle()).map_err(std::io::Error::other)?;
             ai_command::initialize(app.handle()).map_err(std::io::Error::other)?;
+            ai_task::initialize(app.handle()).map_err(std::io::Error::other)?;
             ai_changeset::initialize(app.handle()).map_err(std::io::Error::other)?;
             continuous::initialize(app.handle()).map_err(std::io::Error::other)?;
             Ok(())
@@ -87,6 +92,12 @@ pub fn run() {
             ai_git::ai_git_push,
             ai_command::list_ai_command_profiles,
             ai_command::run_ai_command,
+            ai_task::start_ai_command_task,
+            ai_task::get_ai_task,
+            ai_task::list_ai_tasks,
+            ai_task::get_ai_task_result,
+            ai_task::cancel_ai_task,
+            mcp_core::ai_mcp_core_manifest,
             desktop_shell::set_close_to_tray,
             ai_workspace::ai_file_stat,
             ai_workspace::ai_read_text_file,
