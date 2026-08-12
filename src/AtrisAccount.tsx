@@ -1,6 +1,6 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { CloudOff, LogIn, LogOut, ShieldCheck, UserRound, X } from "lucide-react";
+import { ChevronUp, CloudOff, LogIn, LogOut, ShieldCheck, UserRound, X } from "lucide-react";
 import "./account.css";
 
 interface AtrisUser {
@@ -8,6 +8,7 @@ interface AtrisUser {
   email: string;
   username: string;
   name?: string | null;
+  avatarUrl?: string | null;
   role: string;
 }
 
@@ -33,6 +34,20 @@ const signedOut: AuthSnapshot = {
   offline: false,
 };
 
+function resolveAvatarUrl(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value, "https://atrishub.com");
+    const host = url.hostname.toLowerCase();
+    if (url.protocol !== "https:" || (host !== "atrishub.com" && !host.endsWith(".atrishub.com"))) {
+      return null;
+    }
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
 export default function AtrisAccount() {
   const [session, setSession] = useState<AuthSnapshot | null>(null);
   const [showLogin, setShowLogin] = useState(false);
@@ -42,6 +57,8 @@ export default function AtrisAccount() {
   const [remember, setRemember] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [avatarFailed, setAvatarFailed] = useState(false);
+  const accountRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -59,6 +76,27 @@ export default function AtrisAccount() {
       });
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    setAvatarFailed(false);
+  }, [session?.user?.avatarUrl]);
+
+  useEffect(() => {
+    if (!menuOpen) return undefined;
+    const closeOnPointer = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && !accountRef.current?.contains(target)) setMenuOpen(false);
+    };
+    const closeOnKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenuOpen(false);
+    };
+    window.addEventListener("pointerdown", closeOnPointer);
+    window.addEventListener("keydown", closeOnKey);
+    return () => {
+      window.removeEventListener("pointerdown", closeOnPointer);
+      window.removeEventListener("keydown", closeOnKey);
+    };
+  }, [menuOpen]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -104,35 +142,56 @@ export default function AtrisAccount() {
     .slice(0, 2)
     .map((part) => part[0]?.toUpperCase())
     .join("") || "A";
+  const avatarUrl = avatarFailed ? null : resolveAvatarUrl(user?.avatarUrl);
 
   return (
     <>
-      {session && session.state !== "signed_out" ? (
-        <div className="account-anchor">
-          <button className="account-chip" onClick={() => setMenuOpen((value) => !value)}>
-            <span className="account-avatar">{initials}</span>
-            <span className="account-chip-copy">
-              <strong>{label}</strong>
-              <small>{session.offline ? "Remembered · offline" : `AtrisHub · ${session.membership?.plan || "Member"}`}</small>
-            </span>
-            {session.offline ? <CloudOff size={14} /> : <ShieldCheck size={14} />}
-          </button>
-          {menuOpen && (
-            <div className="account-menu">
-              <div>
-                <strong>{user?.email}</strong>
-                <small>{session.remembered ? "This device is remembered" : "Session ends when AtrisBridge closes"}</small>
+      <div className="ab-sidebar-account" ref={accountRef}>
+        {session && session.state !== "signed_out" ? (
+          <>
+            <button
+              className={`ab-account-button ${menuOpen ? "open" : ""}`}
+              type="button"
+              onClick={() => setMenuOpen((value) => !value)}
+              aria-expanded={menuOpen}
+              aria-haspopup="menu"
+            >
+              <span className="ab-account-avatar">
+                {avatarUrl ? <img src={avatarUrl} alt="" onError={() => setAvatarFailed(true)} /> : initials}
+              </span>
+              <span className="ab-account-copy">
+                <strong>{label}</strong>
+                <small>{session.offline ? "AtrisHub · offline" : `AtrisHub · ${session.membership?.plan || "Member"}`}</small>
+              </span>
+              {session.offline ? <CloudOff size={15} /> : <ChevronUp className="ab-account-chevron" size={15} />}
+            </button>
+            {menuOpen && (
+              <div className="ab-account-menu" role="menu">
+                <div className="ab-account-menu-profile">
+                  <span className="ab-account-menu-avatar">
+                    {avatarUrl ? <img src={avatarUrl} alt="" onError={() => setAvatarFailed(true)} /> : initials}
+                  </span>
+                  <div><strong>{label}</strong><small>{user?.email}</small></div>
+                </div>
+                <div className="ab-account-menu-meta">
+                  <span>{session.membership?.plan || "Member"}</span>
+                  <span>{session.remembered ? "Remembered device" : "Session only"}</span>
+                </div>
+                {session.message && <p>{session.message}</p>}
+                <button type="button" onClick={() => void logout()} disabled={busy} role="menuitem"><LogOut size={15} /> Sign out</button>
               </div>
-              {session.message && <p>{session.message}</p>}
-              <button onClick={() => void logout()} disabled={busy}><LogOut size={14} /> Sign out</button>
-            </div>
-          )}
-        </div>
-      ) : session ? (
-        <button className="account-signin-pill" onClick={() => setShowLogin(true)}>
-          <UserRound size={14} /> Sign in to AtrisHub
-        </button>
-      ) : null}
+            )}
+          </>
+        ) : session ? (
+          <button className="ab-account-button signed-out" type="button" onClick={() => setShowLogin(true)}>
+            <span className="ab-account-avatar"><UserRound size={16} /></span>
+            <span className="ab-account-copy"><strong>Sign in to AtrisHub</strong><small>Sync your Atris identity</small></span>
+            <LogIn size={15} />
+          </button>
+        ) : (
+          <div className="ab-account-skeleton" aria-label="Restoring AtrisHub session" />
+        )}
+      </div>
 
       {showLogin && (
         <div className="account-modal-backdrop" role="presentation">
@@ -140,7 +199,7 @@ export default function AtrisAccount() {
             <button className="account-modal-close" onClick={() => setShowLogin(false)} aria-label="Continue offline">
               <X size={17} />
             </button>
-            <div className="account-brand-mark">A</div>
+            <div className="account-brand-mark"><ShieldCheck size={19} /></div>
             <div className="account-modal-heading">
               <span>ATRISHUB ACCOUNT</span>
               <h2 id="atris-account-title">Sign in to AtrisBridge</h2>
