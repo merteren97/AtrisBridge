@@ -86,104 +86,56 @@ export default function EncryptionPanel({ workspaceId, ready, onError }: Encrypt
     }
   }
 
-  function recoveryImport() {
-    return (
-      <div className="recovery-import">
-        <input
-          type="password"
-          value={importKey}
-          onChange={(event) => setImportKey(event.target.value)}
-          placeholder="AB1-… recovery key"
-          spellCheck={false}
-          autoComplete="off"
-        />
-        <button
-          className="secondary-button"
-          onClick={handleImport}
-          disabled={!ready || !importKey.trim() || busy !== null}
-        >
-          {busy === "import" ? <RefreshCw className="spin" size={14} /> : <KeyRound size={14} />}
-          Import key
-        </button>
-      </div>
-    );
-  }
-
   const enabled = status?.mode === "content";
   const keyMissing = enabled && status?.keyAvailable === false;
 
   return (
-    <section className="encryption-card">
-      <div className="encryption-header">
-        <div className="encryption-title">
-          <span className="encryption-icon"><LockKeyhole size={16} /></span>
-          <div>
-            <small>Phase 7 protection</small>
-            <strong>Client-side encryption</strong>
-            <span>
-              {enabled
-                ? "File contents are encrypted before Google Drive receives them."
-                : "Optional. Enable only before the first synchronized baseline is created."}
-            </span>
-          </div>
+    <section className={`ab-encryption-panel ${enabled ? "enabled" : "disabled"}`}>
+      <header className="ab-encryption-heading">
+        <span className="ab-encryption-icon"><LockKeyhole size={18} /></span>
+        <div>
+          <span className="ab-kicker">Protection</span>
+          <h3>Client-side encryption</h3>
+          <p>{enabled ? "File contents are encrypted locally before Google Drive receives them." : "Optional protection for new remote baselines. Enable it before the first synchronized upload."}</p>
         </div>
-        <span className={`encryption-state ${enabled ? "enabled" : ""}`}>
-          {enabled ? <ShieldCheck size={12} /> : <KeyRound size={12} />}
-          {enabled ? "Content encrypted" : "Disabled"}
+        <span className={`ab-encryption-badge ${enabled ? "enabled" : ""}`}>
+          {enabled ? <ShieldCheck size={13} /> : <KeyRound size={13} />}
+          {enabled ? "Encrypted" : "Off"}
         </span>
-      </div>
+      </header>
 
       {enabled ? (
-        <div className="encryption-body">
-          <div className="encryption-facts">
-            <div><small>Key</small><strong>{status?.keyAvailable ? "OS vault available" : "Recovery key required"}</strong></div>
-            <div><small>Filenames</small><strong>{status?.filenameEncrypted ? "Encrypted" : "Visible"}</strong></div>
-            <div><small>Remote namespace</small><strong>{status?.remoteNamespace ?? "—"}</strong></div>
+        <div className="ab-encryption-content">
+          <div className="ab-encryption-status-list">
+            <div><span>Key</span><strong>{status?.keyAvailable ? "Available in OS vault" : "Recovery key required"}</strong></div>
+            <div><span>Filenames</span><strong>{status?.filenameEncrypted ? "Encrypted" : "Visible"}</strong></div>
+            <div><span>Remote namespace</span><strong title={status?.remoteNamespace ?? undefined}>{status?.remoteNamespace ?? "—"}</strong></div>
           </div>
-          <div className="encryption-actions">
-            {keyMissing ? recoveryImport() : (
-              <button className="secondary-button" onClick={handleExport} disabled={busy !== null || !status?.keyAvailable}>
-                {busy === "export" ? <RefreshCw className="spin" size={14} /> : <KeyRound size={14} />}
-                Export recovery key
-              </button>
-            )}
-          </div>
+
+          {keyMissing ? (
+            <div className="ab-encryption-recovery">
+              <div className="ab-encryption-callout warning"><TriangleAlert size={15} /><span>The encryption key is missing from this device. Import the matching recovery key before remote content can be decrypted or synchronized.</span></div>
+              <label className="ab-encryption-key-field"><span>Recovery key</span><input type="password" value={importKey} onChange={(event) => setImportKey(event.target.value)} placeholder="AB1-…" spellCheck={false} autoComplete="off" /></label>
+              <button className="ab-button secondary ab-encryption-full-button" onClick={handleImport} disabled={!ready || !importKey.trim() || busy !== null}>{busy === "import" ? <RefreshCw className="spin" size={15} /> : <KeyRound size={15} />} Import recovery key</button>
+            </div>
+          ) : (
+            <button className="ab-button secondary ab-encryption-full-button" onClick={handleExport} disabled={busy !== null || !status?.keyAvailable}>{busy === "export" ? <RefreshCw className="spin" size={15} /> : <KeyRound size={15} />} Export recovery key</button>
+          )}
         </div>
       ) : (
-        <div className="encryption-body disabled">
-          <div className="encryption-warning">
-            <TriangleAlert size={15} />
-            <span>Phase 7 encrypts file content, but intentionally leaves filenames and directory structure visible so AtrisBridge can keep exact remote evidence and conflict semantics.</span>
-          </div>
-          <div className="encryption-actions">
-            <button className="secondary-button" onClick={handleEnable} disabled={!ready || busy !== null}>
-              {busy === "enable" ? <RefreshCw className="spin" size={14} /> : <LockKeyhole size={14} />}
-              Enable encryption
-            </button>
-            {recoveryImport()}
-          </div>
-        </div>
-      )}
-
-      {keyMissing && (
-        <div className="recovery-key-box">
-          <div>
-            <strong>Recovery key required</strong>
-            <span>This workspace is encrypted, but the OS vault key is unavailable. Import the matching AB1 recovery key before cloud data can be decrypted or synchronized.</span>
-          </div>
+        <div className="ab-encryption-content">
+          <div className="ab-encryption-callout"><ShieldCheck size={15} /><span>Content encryption keeps file data private while filenames and folders remain visible for exact conflict tracking.</span></div>
+          <button className="ab-button secondary ab-encryption-full-button" onClick={handleEnable} disabled={!ready || busy !== null}>{busy === "enable" ? <RefreshCw className="spin" size={15} /> : <LockKeyhole size={15} />} Enable encryption</button>
+          <div className="ab-encryption-divider"><span>or restore an encrypted workspace</span></div>
+          <label className="ab-encryption-key-field"><span>Recovery key</span><input type="password" value={importKey} onChange={(event) => setImportKey(event.target.value)} placeholder="AB1-…" spellCheck={false} autoComplete="off" /></label>
+          <button className="ab-button secondary ab-encryption-full-button" onClick={handleImport} disabled={!ready || !importKey.trim() || busy !== null}>{busy === "import" ? <RefreshCw className="spin" size={15} /> : <KeyRound size={15} />} Import recovery key</button>
         </div>
       )}
 
       {revealedKey && (
-        <div className="recovery-key-box">
-          <div>
-            <strong>Recovery key</strong>
-            <span>Store this outside the synchronized workspace. Anyone with this key and the encrypted Drive data can decrypt the file contents.</span>
-          </div>
-          <div className="recovery-key-value">
-            <code>{revealedKey}</code>
-            <button className="icon-button" onClick={handleCopy} title="Copy recovery key"><Copy size={14} /></button>
-          </div>
+        <div className="ab-encryption-revealed-key">
+          <div><strong>Recovery key</strong><span>Store this outside the synchronized workspace. Anyone with this key and the encrypted Drive data can decrypt file contents.</span></div>
+          <div className="ab-encryption-key-value"><code>{revealedKey}</code><button type="button" onClick={handleCopy} title="Copy recovery key" aria-label="Copy recovery key"><Copy size={15} /></button></div>
         </div>
       )}
     </section>
