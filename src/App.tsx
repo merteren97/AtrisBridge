@@ -20,6 +20,7 @@ import {
   Trash2,
   TriangleAlert,
   Unplug,
+  X,
 } from "lucide-react";
 import BackupPanel from "./BackupPanel";
 import EncryptionPanel from "./EncryptionPanel";
@@ -49,6 +50,12 @@ import type {
   WorkspaceRemoteBinding,
 } from "./types";
 
+interface ProductNotice {
+  title: string;
+  message: string;
+  detail: string;
+}
+
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -70,6 +77,39 @@ function fileNameFromPath(path: string): string {
 
 function remoteSegment(value: string): string {
   return value.replace(/[\\/]/g, "-").trim() || "Workspace";
+}
+
+function productNotice(value: string): ProductNotice {
+  const detail = value.replace(/^Error:\s*/i, "").trim();
+  const lower = detail.toLowerCase();
+
+  if (
+    lower.includes("google drive") &&
+    (lower.includes("userinfo") ||
+      lower.includes("account check") ||
+      lower.includes("authorization") ||
+      lower.includes("verification"))
+  ) {
+    return {
+      title: "Google Drive connection could not be completed",
+      message: "AtrisBridge could not finish verifying the selected Google account. Try connecting again; no workspace files were changed.",
+      detail,
+    };
+  }
+
+  if (lower.includes(".atrisbridgeignore already exists")) {
+    return {
+      title: "Ignore file already exists",
+      message: "AtrisBridge left the existing .atrisbridgeignore file unchanged.",
+      detail,
+    };
+  }
+
+  return {
+    title: "AtrisBridge could not complete that action",
+    message: "Nothing was applied after the operation failed. Review the technical details and try again.",
+    detail,
+  };
 }
 
 export default function App() {
@@ -99,6 +139,7 @@ export default function App() {
     selected && binding && googleDrive?.sessionActive && rcloneStatus?.available,
   );
   const encryptionReady = Boolean(backupReady && googleDrive?.credentialPersisted);
+  const notice = error ? productNotice(error) : null;
 
   useEffect(() => {
     void refreshWorkspaces();
@@ -245,13 +286,13 @@ export default function App() {
   }
 
   async function handleDisconnectCloudSession() {
-  if (!googleDrive) return;
-  if (!window.confirm(
-    "Remove the saved Google Drive credential from this device? Cloud operations will require Google authorization again. Drive data is not deleted.",
-  )) {
-    return;
-  }
-  try {
+    if (!googleDrive) return;
+    if (!window.confirm(
+      "Remove the saved Google Drive credential from this device? Cloud operations will require Google authorization again. Drive data is not deleted.",
+    )) {
+      return;
+    }
+    try {
       setCloudLoading("disconnect");
       await disconnectProviderSession(googleDrive.id);
       await refreshCloud();
@@ -332,19 +373,21 @@ export default function App() {
           <div className="brand-mark" aria-hidden="true"><span /><span /></div>
           <div><strong>AtrisBridge</strong><small>Project continuity</small></div>
         </div>
-        <nav className="primary-nav">
+        <nav className="primary-nav" aria-label="Primary navigation">
           <button className="nav-item active"><Gauge size={17} /> Overview</button>
           <button className="nav-item" disabled>
-            <ArrowUpFromLine size={17} /> Transfers <span className="soon">Soon</span>
+            <ArrowUpFromLine size={17} /> Transfers <span className="soon">Planned</span>
           </button>
           <button className="nav-item" disabled>
-            <TriangleAlert size={17} /> Conflicts <span className="soon">Soon</span>
+            <TriangleAlert size={17} /> Conflicts <span className="soon">Planned</span>
           </button>
         </nav>
         <div className="sidebar-section">
           <div className="section-heading">
             <span>Workspaces</span>
-            <button className="icon-button" onClick={handleAddWorkspace}><Plus size={16} /></button>
+            <button className="icon-button" onClick={handleAddWorkspace} aria-label="Add workspace">
+              <Plus size={16} />
+            </button>
           </div>
           <div className="workspace-nav">
             {workspaces.length === 0 ? (
@@ -365,41 +408,55 @@ export default function App() {
           </div>
         </div>
         <button className="nav-item settings-link" disabled>
-          <Settings size={17} /> Settings <span className="soon">Soon</span>
+          <Settings size={17} /> Settings <span className="soon">Planned</span>
         </button>
       </aside>
 
       <main className="content">
         <header className="topbar">
-          <div><p className="eyebrow">Local-first workspace protection</p><h1>Overview</h1></div>
+          <div className="topbar-copy">
+            <p className="eyebrow">Project continuity</p>
+            <h1>Overview</h1>
+            <p>Protect local workspaces, review change evidence, and control every cloud transfer.</p>
+          </div>
           <button className="primary-button" onClick={handleAddWorkspace} disabled={loading}>
             <Plus size={16} /> Add workspace
           </button>
         </header>
 
-        {error && (
-          <div className="error-banner">
-            <TriangleAlert size={17} /><span>{error}</span>
-            <button onClick={() => setError(null)}>Dismiss</button>
-          </div>
+        {notice && (
+          <section className="product-notice" role="alert">
+            <span className="product-notice-icon"><TriangleAlert size={17} /></span>
+            <div className="product-notice-copy">
+              <strong>{notice.title}</strong>
+              <p>{notice.message}</p>
+              <details>
+                <summary>Technical details</summary>
+                <code>{notice.detail}</code>
+              </details>
+            </div>
+            <button className="notice-dismiss" onClick={() => setError(null)} aria-label="Dismiss message">
+              <X size={15} />
+            </button>
+          </section>
         )}
 
-        <section className="metric-grid">
+        <section className="metric-grid" aria-label="Workspace health summary">
           <article className="metric-card">
-            <span className="metric-icon"><Box size={19} /></span>
-            <div><small>Workspaces</small><strong>{workspaces.length}</strong></div>
+            <span className="metric-icon"><Box size={18} /></span>
+            <div><small>Workspaces</small><strong>{workspaces.length}</strong><span>managed locally</span></div>
           </article>
           <article className="metric-card">
-            <span className="metric-icon"><FileCode2 size={19} /></span>
-            <div><small>Indexed files</small><strong>{totalKnownFiles.toLocaleString()}</strong></div>
+            <span className="metric-icon"><FileCode2 size={18} /></span>
+            <div><small>Indexed files</small><strong>{totalKnownFiles.toLocaleString()}</strong><span>journaled entries</span></div>
           </article>
           <article className="metric-card">
-            <span className="metric-icon"><HardDrive size={19} /></span>
-            <div><small>Indexed size</small><strong>{formatBytes(totalKnownBytes)}</strong></div>
+            <span className="metric-icon"><HardDrive size={18} /></span>
+            <div><small>Indexed size</small><strong>{formatBytes(totalKnownBytes)}</strong><span>known local data</span></div>
           </article>
           <article className="metric-card safe">
-            <span className="metric-icon"><ShieldCheck size={19} /></span>
-            <div><small>Journal safety</small><strong>Durable</strong></div>
+            <span className="metric-icon"><ShieldCheck size={18} /></span>
+            <div><small>Journal safety</small><strong>Durable</strong><span>SQLite evidence</span></div>
           </article>
         </section>
 
@@ -407,53 +464,66 @@ export default function App() {
           <div className="cloud-card-header">
             <div className="cloud-title">
               <span className="cloud-icon"><CloudCog size={19} /></span>
-              <div><p className="eyebrow">{selected?.syncMode === "two_way" ? "Phase 7 protected transport" : "Phase 4/5 guarded transport"}</p><h2>Google Drive</h2></div>
+              <div><p className="eyebrow">Cloud integration</p><h2>Google Drive</h2></div>
             </div>
-            <span className="read-only-pill"><ShieldCheck size={12} /> {selected?.syncMode === "two_way" ? "Reviewed two-way" : "Guarded transfer"}</span>
+            <span className={`read-only-pill ${googleDrive?.sessionActive ? "connected" : "idle"}`}>
+              {googleDrive?.sessionActive ? <CheckCircle2 size={12} /> : <ShieldCheck size={12} />}
+              {googleDrive?.sessionActive ? "Connected" : "Protected transport"}
+            </span>
           </div>
 
           <div className="cloud-grid">
             <div className="cloud-runtime">
-              <small>rclone sidecar</small>
-              <strong>{rcloneStatus?.available ? `v${rcloneStatus.version}` : "Not prepared"}</strong>
+              <small>Transfer engine</small>
+              <strong>{rcloneStatus?.available ? `rclone v${rcloneStatus.version}` : "Runtime unavailable"}</strong>
               <span>
                 {rcloneStatus?.available
-                  ? `${rcloneStatus.source} · pinned v${rcloneStatus.requiredVersion}`
-                  : rcloneStatus?.message ?? "Checking runtime…"}
+                  ? `${rcloneStatus.source} sidecar · verified v${rcloneStatus.requiredVersion}`
+                  : rcloneStatus?.message ?? "Checking bundled runtime…"}
               </span>
             </div>
             <div className="cloud-provider">
               <div>
-                <small>Provider session</small>
+                <small>Google account</small>
                 <strong>{googleDrive?.accountLabel ?? googleDrive?.displayName ?? "Not connected"}</strong>
                 <span>
                   {googleDrive?.credentialPersisted
-                    ? "Credential protected by the OS secure vault · restart-safe"
+                    ? "Credential protected by the operating system vault"
                     : googleDrive?.sessionActive
                       ? "Session active · secure persistence unavailable"
                       : googleDrive
-                        ? "Credential not stored on this device"
-                        : "Restricted drive.file scope"}
+                        ? "Reconnect to restore the protected session"
+                        : "Least-privilege Drive access; connect when you are ready"}
                 </span>
               </div>
               <div className="cloud-provider-actions">
                 <button
-                  className="secondary-button"
+                  className={googleDrive?.sessionActive ? "secondary-button" : "primary-button"}
                   onClick={handleConnectGoogleDrive}
                   disabled={!rcloneStatus?.available || cloudLoading !== null}
                 >
                   {cloudLoading === "connect"
                     ? <RefreshCw className="spin" size={15} />
                     : <Cloud size={15} />}
-                  {googleDrive ? "Reconnect" : "Connect"}
+                  {googleDrive ? "Reconnect" : "Connect Google Drive"}
                 </button>
                 {googleDrive?.sessionActive && (
-                  <button className="icon-button cloud-action" onClick={handleDisconnectCloudSession}>
+                  <button
+                    className="icon-button cloud-action"
+                    onClick={handleDisconnectCloudSession}
+                    aria-label="Disconnect Google Drive session"
+                    title="Disconnect session"
+                  >
                     <Unplug size={15} />
                   </button>
                 )}
                 {googleDrive && (
-                  <button className="icon-button cloud-action danger-icon" onClick={handleForgetCloud}>
+                  <button
+                    className="icon-button cloud-action danger-icon"
+                    onClick={handleForgetCloud}
+                    aria-label="Forget Google Drive connection"
+                    title="Forget connection"
+                  >
                     <Trash2 size={15} />
                   </button>
                 )}
@@ -467,7 +537,7 @@ export default function App() {
                 <Link2 size={16} />
                 <div>
                   <strong>{selected.name} remote folder</strong>
-                  <span>Binding selects a dedicated AtrisBridge-managed root. Transfer and deletion behavior still requires an explicit reviewed plan.</span>
+                  <span>Choose a dedicated AtrisBridge folder. Transfers remain reviewable before any remote change is executed.</span>
                 </div>
               </div>
               <div className="remote-binding-controls">
@@ -475,13 +545,14 @@ export default function App() {
                   value={remotePathDraft}
                   onChange={(event) => setRemotePathDraft(event.target.value)}
                   spellCheck={false}
+                  aria-label="Google Drive remote folder"
                 />
                 <button
                   className="secondary-button"
                   onClick={handleBindRemote}
                   disabled={cloudLoading !== null}
                 >
-                  <Link2 size={14} /> {binding ? "Update binding" : "Bind folder"}
+                  <Link2 size={14} /> {binding ? "Update folder" : "Bind folder"}
                 </button>
                 <button
                   className="primary-button"
@@ -525,7 +596,7 @@ export default function App() {
           )}
 
           <p className="cloud-security-note">
-            <ShieldCheck size={13} /> Google Drive credentials are stored only through the operating system secure credential vault. Client-side encryption is optional and protects file contents before upload; Phase 7 intentionally leaves filenames and directory structure visible.
+            <ShieldCheck size={13} /> Credentials stay in the operating system secure vault. Optional client-side encryption protects file contents before upload while keeping filenames and folder structure visible.
           </p>
         </section>
 
@@ -555,16 +626,16 @@ export default function App() {
 
             <div className="workspace-meta-grid">
               <div>
-        <small>Mode</small>
-        <strong>{selected.syncMode === "two_way" ? "Two-Way" : selected.syncMode === "pull" ? "Pull" : "Backup"}</strong>
-        <span>
-          {selected.syncMode === "two_way"
-            ? "Conflict-aware local ↔ Drive plans with recoverable deletion propagation."
-            : selected.syncMode === "pull"
-              ? "Explicit cloud → local restore mode."
-              : "Guarded local → cloud writes only."}
-        </span>
-      </div>
+                <small>Mode</small>
+                <strong>{selected.syncMode === "two_way" ? "Two-Way" : selected.syncMode === "pull" ? "Pull" : "Backup"}</strong>
+                <span>
+                  {selected.syncMode === "two_way"
+                    ? "Conflict-aware local ↔ Drive plans with recoverable deletion propagation."
+                    : selected.syncMode === "pull"
+                      ? "Explicit cloud → local restore mode."
+                      : "Guarded local → cloud writes only."}
+                </span>
+              </div>
               <div><small>Last scan</small><strong>{formatDate(journal?.lastScanAt ?? report?.scannedAt ?? selected.lastScanAt)}</strong><span>BLAKE3 local inventory</span></div>
               <div><small>Journal</small><strong>{journal?.presentFiles.toLocaleString() ?? "—"}</strong><span>{journal?.changedFiles ?? 0} changed · SQLite state</span></div>
               <div><small>Safety queue</small><strong>{journal?.tombstones ?? 0} tombstones</strong><span>{journal?.conflicts ?? 0} conflicts · {journal?.pendingOperations ?? 0} queued</span></div>
@@ -625,13 +696,20 @@ export default function App() {
           </section>
         ) : (
           <section className="welcome-card">
-            <div className="welcome-icon"><ShieldCheck size={30} /></div>
-            <p className="eyebrow">Start safely</p>
-            <h2>Add your first project workspace</h2>
-            <p>Build a local BLAKE3 inventory before connecting any transport provider.</p>
-            <button className="primary-button" onClick={handleAddWorkspace}>
-              <Plus size={16} /> Choose project folder
-            </button>
+            <div className="welcome-copy">
+              <div className="welcome-icon"><ShieldCheck size={27} /></div>
+              <p className="eyebrow">Get started</p>
+              <h2>Protect your first workspace</h2>
+              <p>AtrisBridge builds a local inventory first, then lets you connect transport and review every remote operation.</p>
+              <button className="primary-button" onClick={handleAddWorkspace}>
+                <Plus size={16} /> Choose project folder
+              </button>
+            </div>
+            <ol className="setup-steps">
+              <li><span>1</span><div><strong>Add a workspace</strong><small>Select the project folder you want AtrisBridge to protect.</small></div></li>
+              <li><span>2</span><div><strong>Build local evidence</strong><small>Scan files into the durable BLAKE3-backed journal.</small></div></li>
+              <li><span>3</span><div><strong>Connect when ready</strong><small>Bind Google Drive only after the local baseline is clear.</small></div></li>
+            </ol>
           </section>
         )}
       </main>
