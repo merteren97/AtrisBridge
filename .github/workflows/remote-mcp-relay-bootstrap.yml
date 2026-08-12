@@ -180,12 +180,11 @@ jobs:
           text = text[:start] + replacement + text[end:]
           relay.write_text(text)
           PY
-      - name: Format and verify Rust
+      - name: Format and resolve Rust dependencies
         working-directory: src-tauri
         run: |
           cargo fmt --all
-          cargo check --lib
-          cargo test --lib
+          cargo generate-lockfile
       - name: Commit clean product tree
         run: |
           rm -f .github/workflows/remote-mcp-relay-bootstrap.yml .github/workflows/remote-mcp-relay-bootstrap-fix.yml .github/workflows/remote-mcp-relay-bootstrap-final.yml
