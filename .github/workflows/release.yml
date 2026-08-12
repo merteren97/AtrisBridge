@@ -194,7 +194,7 @@ jobs:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
           $certificatePath = Join-Path $env:RUNNER_TEMP "atrisbridge-code-signing.pfx"
-          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env.WINDOWS_CERTIFICATE))
           $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
           $certificate = Import-PfxCertificate -FilePath $certificatePath -CertStoreLocation Cert:\CurrentUser\My -Password $password
           if (-not $certificate.Thumbprint) { throw "Windows signing certificate import failed." }
@@ -222,7 +222,6 @@ jobs:
             src-tauri/target/**/release/bundle/**/*.exe
             src-tauri/target/**/release/bundle/**/*.msi
             src-tauri/target/**/release/bundle/**/*.AppImage
-            src-tauri/target/**/release/bundle/**/*.AppImage.tar.gz
             src-tauri/target/**/release/bundle/**/*.deb
             src-tauri/target/**/release/bundle/**/*.sig
 
@@ -252,12 +251,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$(find release-assets -type f -iname '*-setup.exe' -print -quit)"
+          nsis="$(find release-assets -type f -iname '*-setup.exe' -print -quit)"
+          appimage="$(find release-assets -type f -iname '*.AppImage' -print -quit)"
+          test -n "$nsis"
+          test -f "${nsis}.sig"
           test -n "$(find release-assets -type f -iname '*.msi' -print -quit)"
-          test -n "$(find release-assets -type f -iname '*.AppImage' -print -quit)"
-          test -n "$(find release-assets -type f -iname '*.AppImage.tar.gz' -print -quit)"
+          test -n "$appimage"
+          test -f "${appimage}.sig"
           test -n "$(find release-assets -type f -iname '*.deb' -print -quit)"
-          test "$(find release-assets -type f -iname '*.sig' | wc -l)" -ge 2
       - name: Generate updater manifest
         run: node .github/scripts/generate-updater-manifest.mjs release-assets "$GITHUB_REPOSITORY" "$RELEASE_TAG"
       - name: Publish GitHub Release
@@ -287,9 +288,9 @@ jobs:
           set -euo pipefail
           ASSETS="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
           grep -Eiq -- '-setup\.exe$' <<< "$ASSETS"
+          grep -Eiq -- '-setup\.exe\.sig$' <<< "$ASSETS"
           grep -Eiq '\.msi$' <<< "$ASSETS"
           grep -Eiq '\.AppImage$' <<< "$ASSETS"
-          grep -Eiq '\.AppImage\.tar\.gz$' <<< "$ASSETS"
+          grep -Eiq '\.AppImage\.sig$' <<< "$ASSETS"
           grep -Eiq '\.deb$' <<< "$ASSETS"
-          grep -Eiq '\.sig$' <<< "$ASSETS"
           grep -Fxq 'latest.json' <<< "$ASSETS"

@@ -47,15 +47,14 @@ test("updater config falls back to RELEASE_TAG when a shell expands the CLI tag 
   }
 });
 
-test("manifest contains signed canonical Windows and Linux updater targets", () => {
+test("manifest contains signed canonical Windows and Tauri v2 Linux updater targets", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "atrisbridge-manifest-"));
   try {
     for (const [name, contents] of [
       ["AtrisBridge_0.1.0-alpha.8_x64-setup.exe", "exe"],
       ["AtrisBridge_0.1.0-alpha.8_x64-setup.exe.sig", "windows-signature"],
       ["AtrisBridge_0.1.0-alpha.8_amd64.AppImage", "appimage"],
-      ["AtrisBridge_0.1.0-alpha.8_amd64.AppImage.tar.gz", "appimage-updater"],
-      ["AtrisBridge_0.1.0-alpha.8_amd64.AppImage.tar.gz.sig", "linux-signature"],
+      ["AtrisBridge_0.1.0-alpha.8_amd64.AppImage.sig", "linux-signature"],
       ["AtrisBridge_0.1.0-alpha.8_x64_en-US.msi", "msi"],
       ["AtrisBridge_0.1.0-alpha.8_amd64.deb", "deb"],
     ]) fs.writeFileSync(path.join(root, name), contents);
@@ -68,7 +67,7 @@ test("manifest contains signed canonical Windows and Linux updater targets", () 
     assert.equal(manifest.version, "0.1.0-alpha.8");
     assert.equal(manifest.platforms["windows-x86_64"].signature, "windows-signature");
     assert.equal(manifest.platforms["linux-x86_64"].signature, "linux-signature");
-    assert.match(manifest.platforms["linux-x86_64"].url, /\.AppImage\.tar\.gz$/);
+    assert.match(manifest.platforms["linux-x86_64"].url, /\.AppImage$/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
