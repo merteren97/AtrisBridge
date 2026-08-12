@@ -4,6 +4,7 @@ const SERVICE_NAME: &str = "com.atrishub.atrisbridge";
 const OAUTH_PREFIX: &str = "oauth.google_drive";
 const CRYPT_PREFIX: &str = "crypt.workspace";
 const ATRIS_REFRESH_ACCOUNT: &str = "auth.atrishub.refresh";
+const AI_ARTIFACT_KEY_ACCOUNT: &str = "crypt.ai_artifacts.v1";
 
 fn entry(account: &str) -> Result<Entry, String> {
     Entry::new(SERVICE_NAME, account)
@@ -46,6 +47,22 @@ pub fn load_atrishub_refresh_token() -> Result<Option<String>, String> {
 
 pub fn delete_atrishub_refresh_token() -> Result<(), String> {
     delete_password(ATRIS_REFRESH_ACCOUNT, "AtrisHub session")
+}
+
+pub fn store_ai_artifact_key(encoded_key: &str) -> Result<(), String> {
+    let key = encoded_key.trim();
+    if key.len() != 64 || !key.bytes().all(|value| value.is_ascii_hexdigit()) {
+        return Err("Invalid AI artifact encryption key.".into());
+    }
+    entry(AI_ARTIFACT_KEY_ACCOUNT)?
+        .set_password(key)
+        .map_err(|error| {
+            format!("Could not save AI artifact encryption key in the OS vault: {error}")
+        })
+}
+
+pub fn load_ai_artifact_key() -> Result<Option<String>, String> {
+    load_password(AI_ARTIFACT_KEY_ACCOUNT, "AI artifact encryption key")
 }
 
 pub fn workspace_key_reference(

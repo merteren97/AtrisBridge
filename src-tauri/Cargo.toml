@@ -27,3 +27,4 @@ rusqlite = { version = "0.40.1", features = ["bundled"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "json", "query", "rustls"] }
 keyring = "4.1.6"
 notify = "8.2.0"
+chacha20poly1305 = "0.11.0"

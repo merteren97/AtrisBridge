@@ -14,7 +14,7 @@ const MAX_SESSION_TTL_MINUTES: u64 = 24 * 60;
 const DEFAULT_AUDIT_LIMIT: u32 = 100;
 const MAX_AUDIT_LIMIT: u32 = 500;
 
-pub const AI_CAPABILITIES: [&str; 10] = [
+pub const AI_CAPABILITIES: [&str; 11] = [
     "workspace.read",
     "workspace.edit",
     "workspace.delete",
@@ -25,6 +25,7 @@ pub const AI_CAPABILITIES: [&str; 10] = [
     "sync.execute",
     "sync.destructive",
     "sensitive.read",
+    "sensitive.write",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
