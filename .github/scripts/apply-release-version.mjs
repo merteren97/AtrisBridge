@@ -36,7 +36,7 @@ const cargoLockPath = path.join(root, "src-tauri", "Cargo.lock");
 if (fs.existsSync(cargoLockPath)) {
   const cargoLock = fs.readFileSync(cargoLockPath, "utf8");
   const updatedLock = cargoLock.replace(
-    /(\[\[package\]\]\nname = "atrisbridge"\nversion = ")[^"]+("\n)/,
+    /(\[\[package\]\]\r?\nname = "atrisbridge"\r?\nversion = ")[^"]+(")/,
     `$1${version}$2`,
   );
   if (updatedLock === cargoLock) throw new Error("Could not update the AtrisBridge Cargo.lock package version.");
