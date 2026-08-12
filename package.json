@@ -15,7 +15,7 @@
     "icons:prepare": "tauri icon public/brand/atrisbridge-mark.svg",
     "test:release-contract": "node --test .github/scripts/release-contract.test.mjs",
     "tauri": "tauri",
-    "tauri:dev": "npm run icons:prepare && tauri dev",
+    "tauri:dev": "npm run mcp:prepare && npm run icons:prepare && tauri dev",
     "tauri:build": "npm run sidecar:prepare:release && npm run icons:prepare && node .github/scripts/create-package-build-config.mjs src-tauri/tauri.package.conf.json && tauri build --config src-tauri/tauri.package.conf.json"
   },
   "dependencies": {
