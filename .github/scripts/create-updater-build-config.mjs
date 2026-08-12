@@ -39,10 +39,11 @@ export function createUpdaterBuildConfig(publicKey, tag) {
 
 export function writeUpdaterBuildConfig(outputPath, tag, publicKey = process.env.TAURI_UPDATER_PUBLIC_KEY) {
   if (!outputPath) throw new Error("An updater build config output path is required.");
-  if (!tag) throw new Error("A release tag is required to generate the updater config.");
+  const resolvedTag = typeof tag === "string" && tag.trim() ? tag.trim() : process.env.RELEASE_TAG?.trim();
+  if (!resolvedTag) throw new Error("A release tag is required to generate the updater config.");
   const resolved = path.resolve(outputPath);
   fs.mkdirSync(path.dirname(resolved), { recursive: true });
-  fs.writeFileSync(resolved, `${JSON.stringify(createUpdaterBuildConfig(publicKey, tag), null, 2)}\n`, {
+  fs.writeFileSync(resolved, `${JSON.stringify(createUpdaterBuildConfig(publicKey, resolvedTag), null, 2)}\n`, {
     encoding: "utf8",
     mode: 0o600
   });
