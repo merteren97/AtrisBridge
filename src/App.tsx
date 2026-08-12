@@ -1,22 +1,27 @@
 import { useEffect, useMemo, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
-  ArrowUpFromLine,
-  Box,
+  Activity,
+  ArrowRight,
   CheckCircle2,
-  ChevronRight,
   Cloud,
   CloudCog,
+  Database,
   FileCode2,
   FolderOpen,
-  Gauge,
+  FolderSync,
   HardDrive,
+  LayoutDashboard,
   Link2,
+  ListChecks,
+  MonitorDot,
   Plus,
   RefreshCw,
   ScanSearch,
   Settings,
   ShieldCheck,
+  SlidersHorizontal,
   Trash2,
   TriangleAlert,
   Unplug,
@@ -50,11 +55,15 @@ import type {
   WorkspaceRemoteBinding,
 } from "./types";
 
+type AppView = "overview" | "workspace" | "activity" | "settings";
+
 interface ProductNotice {
   title: string;
   message: string;
   detail: string;
 }
+
+const CLOSE_TO_TRAY_KEY = "atrisbridge.closeToTray";
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
@@ -64,7 +73,7 @@ function formatBytes(bytes: number): string {
 }
 
 function formatDate(value: string | null | undefined): string {
-  if (!value) return "Not scanned yet";
+  if (!value) return "Not yet";
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",
     timeStyle: "short",
@@ -77,6 +86,12 @@ function fileNameFromPath(path: string): string {
 
 function remoteSegment(value: string): string {
   return value.replace(/[\\/]/g, "-").trim() || "Workspace";
+}
+
+function syncModeLabel(mode: Workspace["syncMode"]): string {
+  if (mode === "two_way") return "Two-Way";
+  if (mode === "pull") return "Pull";
+  return "Backup";
 }
 
 function productNotice(value: string): ProductNotice {
@@ -113,6 +128,7 @@ function productNotice(value: string): ProductNotice {
 }
 
 export default function App() {
+  const [view, setView] = useState<AppView>("overview");
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [reports, setReports] = useState<Record<string, ScanReport>>({});
@@ -125,6 +141,9 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [cloudLoading, setCloudLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [closeToTray, setCloseToTray] = useState(
+    () => localStorage.getItem(CLOSE_TO_TRAY_KEY) === "1",
+  );
 
   const selected = useMemo(
     () => workspaces.find((workspace) => workspace.id === selectedId) ?? workspaces[0] ?? null,
@@ -149,6 +168,13 @@ export default function App() {
   useEffect(() => {
     if (selected) void refreshBinding(selected);
   }, [selected?.id]);
+
+  useEffect(() => {
+    localStorage.setItem(CLOSE_TO_TRAY_KEY, closeToTray ? "1" : "0");
+    void invoke("set_close_to_tray", { enabled: closeToTray }).catch((reason) => {
+      setError(`Could not update close behavior: ${String(reason)}`);
+    });
+  }, [closeToTray]);
 
   async function refreshWorkspaces() {
     try {
@@ -194,6 +220,11 @@ export default function App() {
     if (selected) await refreshBinding(selected);
   }
 
+  function openWorkspace(workspace: Workspace) {
+    setSelectedId(workspace.id);
+    setView("workspace");
+  }
+
   async function handleAddWorkspace() {
     const path = await open({
       directory: true,
@@ -208,6 +239,7 @@ export default function App() {
       const workspace = await addWorkspace(fileNameFromPath(path), path);
       await refreshWorkspaces();
       setSelectedId(workspace.id);
+      setView("workspace");
     } catch (err) {
       setError(String(err));
     } finally {
@@ -265,6 +297,7 @@ export default function App() {
       setRemoteReports(({ [selected.id]: _, ...rest }) => rest);
       setSummaries(({ [selected.id]: _, ...rest }) => rest);
       setBindings(({ [selected.id]: _, ...rest }) => rest);
+      setView("overview");
     } catch (err) {
       setError(String(err));
     } finally {
@@ -365,353 +398,399 @@ export default function App() {
     (sum, item) => sum + item.presentFiles,
     0,
   );
+  const totalPending = Object.values(summaries).reduce(
+    (sum, item) => sum + item.pendingOperations,
+    0,
+  );
+  const totalConflicts = Object.values(summaries).reduce(
+    (sum, item) => sum + item.conflicts,
+    0,
+  );
+  const totalChanged = Object.values(summaries).reduce(
+    (sum, item) => sum + item.changedFiles,
+    0,
+  );
+
+  const pageTitle = view === "workspace"
+    ? selected?.name ?? "Workspace"
+    : view === "activity"
+      ? "Activity"
+      : view === "settings"
+        ? "Settings"
+        : "Overview";
+  const pageDescription = view === "workspace"
+    ? "Inspect local evidence, remote mapping, backup and protection state."
+    : view === "activity"
+      ? "Review pending work and workspace state without digging through raw logs."
+      : view === "settings"
+        ? "Configure desktop behavior, transport and security preferences."
+        : "A focused view of project continuity across every protected workspace.";
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-mark" aria-hidden="true"><span /><span /></div>
-          <div><strong>AtrisBridge</strong><small>Project continuity</small></div>
-        </div>
-        <nav className="primary-nav" aria-label="Primary navigation">
-          <button className="nav-item active"><Gauge size={17} /> Overview</button>
-          <button className="nav-item" disabled>
-            <ArrowUpFromLine size={17} /> Transfers <span className="soon">Planned</span>
+    <div className="product-shell">
+      <aside className="product-sidebar">
+        <button className="product-brand" onClick={() => setView("overview")} type="button">
+          <span className="brand-symbol" aria-hidden="true"><i /><i /></span>
+          <span className="brand-copy"><strong>AtrisBridge</strong><small>Project continuity</small></span>
+        </button>
+
+        <nav className="sidebar-nav" aria-label="Primary navigation">
+          <button className={view === "overview" ? "active" : ""} onClick={() => setView("overview")}>
+            <LayoutDashboard size={17} /><span>Overview</span>
           </button>
-          <button className="nav-item" disabled>
-            <TriangleAlert size={17} /> Conflicts <span className="soon">Planned</span>
+          <button className={view === "activity" ? "active" : ""} onClick={() => setView("activity")}>
+            <Activity size={17} /><span>Activity</span>
+            {(totalPending > 0 || totalConflicts > 0) && <b>{totalPending + totalConflicts}</b>}
           </button>
         </nav>
-        <div className="sidebar-section">
-          <div className="section-heading">
+
+        <section className="sidebar-workspaces" aria-label="Workspaces">
+          <div className="sidebar-section-title">
             <span>Workspaces</span>
-            <button className="icon-button" onClick={handleAddWorkspace} aria-label="Add workspace">
-              <Plus size={16} />
-            </button>
+            <button type="button" onClick={handleAddWorkspace} aria-label="Add workspace"><Plus size={15} /></button>
           </div>
-          <div className="workspace-nav">
+          <div className="workspace-list">
             {workspaces.length === 0 ? (
-              <p className="sidebar-empty">No workspaces yet.</p>
-            ) : workspaces.map((workspace) => (
-              <button
-                key={workspace.id}
-                className={`workspace-nav-item ${selected?.id === workspace.id ? "selected" : ""}`}
-                onClick={() => setSelectedId(workspace.id)}
-              >
-                <span className="workspace-dot" />
-                <span className="workspace-nav-copy">
-                  <strong>{workspace.name}</strong><small>{workspace.syncMode}</small>
-                </span>
-                <ChevronRight size={14} />
-              </button>
-            ))}
+              <div className="sidebar-empty">No protected folders yet.</div>
+            ) : workspaces.map((workspace) => {
+              const summary = summaries[workspace.id];
+              const needsAttention = (summary?.conflicts ?? 0) > 0;
+              return (
+                <button
+                  type="button"
+                  key={workspace.id}
+                  className={view === "workspace" && selected?.id === workspace.id ? "selected" : ""}
+                  onClick={() => openWorkspace(workspace)}
+                >
+                  <span className={`workspace-state-dot ${needsAttention ? "attention" : ""}`} />
+                  <span className="workspace-list-copy">
+                    <strong>{workspace.name}</strong>
+                    <small>{syncModeLabel(workspace.syncMode)} · {summary?.presentFiles?.toLocaleString() ?? 0} files</small>
+                  </span>
+                  {needsAttention && <span className="workspace-alert-mark">!</span>}
+                </button>
+              );
+            })}
           </div>
+        </section>
+
+        <div className="sidebar-footer">
+          <div className="runtime-mini-status">
+            <span className={rcloneStatus?.available ? "online" : "offline"} />
+            <div>
+              <strong>{rcloneStatus?.available ? "Transport ready" : "Transport offline"}</strong>
+              <small>{googleDrive?.sessionActive ? "Google Drive connected" : "Local mode"}</small>
+            </div>
+          </div>
+          <button className={view === "settings" ? "settings-nav active" : "settings-nav"} onClick={() => setView("settings")}>
+            <Settings size={17} /><span>Settings</span>
+          </button>
         </div>
-        <button className="nav-item settings-link" disabled>
-          <Settings size={17} /> Settings <span className="soon">Planned</span>
-        </button>
       </aside>
 
-      <main className="content">
-        <header className="topbar">
-          <div className="topbar-copy">
-            <p className="eyebrow">Project continuity</p>
-            <h1>Overview</h1>
-            <p>Protect local workspaces, review change evidence, and control every cloud transfer.</p>
+      <main className="product-main">
+        <header className="product-topbar">
+          <div className="page-heading">
+            <span className="page-kicker">{view === "workspace" ? "Workspace" : "AtrisBridge"}</span>
+            <h1>{pageTitle}</h1>
+            <p>{pageDescription}</p>
           </div>
-          <button className="primary-button" onClick={handleAddWorkspace} disabled={loading}>
-            <Plus size={16} /> Add workspace
-          </button>
+          <div className="topbar-actions">
+            {view === "workspace" && selected && (
+              <button className="button secondary" onClick={handleScan} disabled={loading}>
+                {loading ? <RefreshCw className="spin" size={15} /> : <ScanSearch size={15} />}
+                Scan
+              </button>
+            )}
+            <button className="button primary" onClick={handleAddWorkspace} disabled={loading}>
+              <Plus size={15} /> Add workspace
+            </button>
+          </div>
         </header>
 
         {notice && (
           <section className="product-notice" role="alert">
-            <span className="product-notice-icon"><TriangleAlert size={17} /></span>
-            <div className="product-notice-copy">
+            <span className="notice-icon"><TriangleAlert size={16} /></span>
+            <div>
               <strong>{notice.title}</strong>
               <p>{notice.message}</p>
-              <details>
-                <summary>Technical details</summary>
-                <code>{notice.detail}</code>
-              </details>
+              <details><summary>Technical details</summary><code>{notice.detail}</code></details>
             </div>
-            <button className="notice-dismiss" onClick={() => setError(null)} aria-label="Dismiss message">
-              <X size={15} />
-            </button>
+            <button type="button" onClick={() => setError(null)} aria-label="Dismiss message"><X size={15} /></button>
           </section>
         )}
 
-        <section className="metric-grid" aria-label="Workspace health summary">
-          <article className="metric-card">
-            <span className="metric-icon"><Box size={18} /></span>
-            <div><small>Workspaces</small><strong>{workspaces.length}</strong><span>managed locally</span></div>
-          </article>
-          <article className="metric-card">
-            <span className="metric-icon"><FileCode2 size={18} /></span>
-            <div><small>Indexed files</small><strong>{totalKnownFiles.toLocaleString()}</strong><span>journaled entries</span></div>
-          </article>
-          <article className="metric-card">
-            <span className="metric-icon"><HardDrive size={18} /></span>
-            <div><small>Indexed size</small><strong>{formatBytes(totalKnownBytes)}</strong><span>known local data</span></div>
-          </article>
-          <article className="metric-card safe">
-            <span className="metric-icon"><ShieldCheck size={18} /></span>
-            <div><small>Journal safety</small><strong>Durable</strong><span>SQLite evidence</span></div>
-          </article>
-        </section>
-
-        <section className="cloud-card">
-          <div className="cloud-card-header">
-            <div className="cloud-title">
-              <span className="cloud-icon"><CloudCog size={19} /></span>
-              <div><p className="eyebrow">Cloud integration</p><h2>Google Drive</h2></div>
-            </div>
-            <span className={`read-only-pill ${googleDrive?.sessionActive ? "connected" : "idle"}`}>
-              {googleDrive?.sessionActive ? <CheckCircle2 size={12} /> : <ShieldCheck size={12} />}
-              {googleDrive?.sessionActive ? "Connected" : "Protected transport"}
-            </span>
-          </div>
-
-          <div className="cloud-grid">
-            <div className="cloud-runtime">
-              <small>Transfer engine</small>
-              <strong>{rcloneStatus?.available ? `rclone v${rcloneStatus.version}` : "Runtime unavailable"}</strong>
-              <span>
-                {rcloneStatus?.available
-                  ? `${rcloneStatus.source} sidecar · verified v${rcloneStatus.requiredVersion}`
-                  : rcloneStatus?.message ?? "Checking bundled runtime…"}
-              </span>
-            </div>
-            <div className="cloud-provider">
-              <div>
-                <small>Google account</small>
-                <strong>{googleDrive?.accountLabel ?? googleDrive?.displayName ?? "Not connected"}</strong>
-                <span>
-                  {googleDrive?.credentialPersisted
-                    ? "Credential protected by the operating system vault"
-                    : googleDrive?.sessionActive
-                      ? "Session active · secure persistence unavailable"
-                      : googleDrive
-                        ? "Reconnect to restore the protected session"
-                        : "Least-privilege Drive access; connect when you are ready"}
-                </span>
-              </div>
-              <div className="cloud-provider-actions">
-                <button
-                  className={googleDrive?.sessionActive ? "secondary-button" : "primary-button"}
-                  onClick={handleConnectGoogleDrive}
-                  disabled={!rcloneStatus?.available || cloudLoading !== null}
-                >
-                  {cloudLoading === "connect"
-                    ? <RefreshCw className="spin" size={15} />
-                    : <Cloud size={15} />}
-                  {googleDrive ? "Reconnect" : "Connect Google Drive"}
-                </button>
-                {googleDrive?.sessionActive && (
-                  <button
-                    className="icon-button cloud-action"
-                    onClick={handleDisconnectCloudSession}
-                    aria-label="Disconnect Google Drive session"
-                    title="Disconnect session"
-                  >
-                    <Unplug size={15} />
-                  </button>
-                )}
-                {googleDrive && (
-                  <button
-                    className="icon-button cloud-action danger-icon"
-                    onClick={handleForgetCloud}
-                    aria-label="Forget Google Drive connection"
-                    title="Forget connection"
-                  >
-                    <Trash2 size={15} />
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {selected && googleDrive && (
-            <div className="remote-binding-row">
-              <div className="remote-binding-copy">
-                <Link2 size={16} />
-                <div>
-                  <strong>{selected.name} remote folder</strong>
-                  <span>Choose a dedicated AtrisBridge folder. Transfers remain reviewable before any remote change is executed.</span>
+        <div className="page-scroll">
+          {view === "overview" && (
+            <div className="page-stack overview-page">
+              <section className="summary-strip" aria-label="AtrisBridge summary">
+                <div><small>Protected workspaces</small><strong>{workspaces.length}</strong><span>{workspaces.length === 1 ? "workspace" : "workspaces"}</span></div>
+                <div><small>Indexed content</small><strong>{totalKnownFiles.toLocaleString()}</strong><span>{formatBytes(totalKnownBytes)}</span></div>
+                <div><small>Pending operations</small><strong>{totalPending}</strong><span>{totalChanged} changed files</span></div>
+                <div className={totalConflicts > 0 ? "attention" : "healthy"}>
+                  <small>Continuity state</small>
+                  <strong>{totalConflicts > 0 ? `${totalConflicts} attention` : "Healthy"}</strong>
+                  <span>{totalConflicts > 0 ? "Conflicts require review" : "No unresolved conflicts"}</span>
                 </div>
-              </div>
-              <div className="remote-binding-controls">
-                <input
-                  value={remotePathDraft}
-                  onChange={(event) => setRemotePathDraft(event.target.value)}
-                  spellCheck={false}
-                  aria-label="Google Drive remote folder"
-                />
-                <button
-                  className="secondary-button"
-                  onClick={handleBindRemote}
-                  disabled={cloudLoading !== null}
-                >
-                  <Link2 size={14} /> {binding ? "Update folder" : "Bind folder"}
-                </button>
-                <button
-                  className="primary-button"
-                  onClick={handleRemoteScan}
-                  disabled={!binding || !googleDrive.sessionActive || cloudLoading !== null}
-                >
-                  {cloudLoading === "scan"
-                    ? <RefreshCw className="spin" size={14} />
-                    : <ScanSearch size={14} />}
-                  Scan remote
-                </button>
-              </div>
-              <div className="remote-binding-status">
-                <span>{binding ? `Bound to ${binding.remotePath}` : "Save a dedicated folder mapping first."}</span>
-                <span>
-                  {remoteReport
-                    ? `${remoteReport.fileCount.toLocaleString()} remote files · ${formatBytes(remoteReport.totalBytes)}`
-                    : binding?.lastInventoryAt
-                      ? `Last inventory ${formatDate(binding.lastInventoryAt)}`
-                      : "Remote inventory not read yet"}
-                </span>
-              </div>
-            </div>
-          )}
+              </section>
 
-          {selected && binding && googleDrive && (
-            <EncryptionPanel
-              workspaceId={selected.id}
-              ready={encryptionReady}
-              onError={(message) => setError(message)}
-            />
-          )}
+              <section className="content-section">
+                <div className="section-header">
+                  <div><span className="section-kicker">Protected projects</span><h2>Workspaces</h2></div>
+                  <button className="text-action" onClick={handleAddWorkspace}><Plus size={14} /> Add workspace</button>
+                </div>
 
-          {selected && (
-            <BackupPanel
-              workspace={selected}
-              ready={backupReady}
-              onChanged={refreshAfterBackupChange}
-              onError={(message) => setError(message)}
-            />
-          )}
-
-          <p className="cloud-security-note">
-            <ShieldCheck size={13} /> Credentials stay in the operating system secure vault. Optional client-side encryption protects file contents before upload while keeping filenames and folder structure visible.
-          </p>
-        </section>
-
-        {selected ? (
-          <section className="workspace-panel">
-            <div className="workspace-header">
-              <div className="workspace-title-block">
-                <div className="workspace-avatar"><FolderOpen size={22} /></div>
-                <div>
-                  <div className="title-row">
-                    <h2>{selected.name}</h2>
-                    <span className="status-pill"><CheckCircle2 size={13} /> Local</span>
+                {workspaces.length === 0 ? (
+                  <div className="product-empty-state">
+                    <span className="empty-icon"><FolderSync size={24} /></span>
+                    <div><h3>Add the first project you want to protect</h3><p>AtrisBridge starts locally, builds an inventory, then lets you attach cloud transport when you are ready.</p></div>
+                    <button className="button primary" onClick={handleAddWorkspace}><FolderOpen size={15} /> Choose project folder</button>
                   </div>
-                  <p>{selected.localPath}</p>
-                </div>
-              </div>
-              <div className="workspace-actions">
-                <button className="secondary-button" onClick={handleCreateIgnore} disabled={loading}>
-                  <ShieldCheck size={16} /> Create ignore file
-                </button>
-                <button className="primary-button" onClick={handleScan} disabled={loading}>
-                  {loading ? <RefreshCw className="spin" size={16} /> : <ScanSearch size={16} />}
-                  Scan workspace
-                </button>
+                ) : (
+                  <div className="workspace-table" role="list">
+                    {workspaces.map((workspace) => {
+                      const summary = summaries[workspace.id];
+                      const workspaceBinding = bindings[workspace.id];
+                      const issueCount = summary?.conflicts ?? 0;
+                      return (
+                        <button key={workspace.id} type="button" className="workspace-row" onClick={() => openWorkspace(workspace)} role="listitem">
+                          <span className="workspace-row-icon"><FolderOpen size={17} /></span>
+                          <span className="workspace-row-main"><strong>{workspace.name}</strong><small>{workspace.localPath}</small></span>
+                          <span className="workspace-row-stat"><small>Mode</small><strong>{syncModeLabel(workspace.syncMode)}</strong></span>
+                          <span className="workspace-row-stat"><small>Files</small><strong>{summary?.presentFiles?.toLocaleString() ?? "—"}</strong></span>
+                          <span className="workspace-row-stat"><small>Last scan</small><strong>{formatDate(summary?.lastScanAt ?? workspace.lastScanAt)}</strong></span>
+                          <span className={`workspace-row-state ${issueCount > 0 ? "attention" : ""}`}>
+                            {issueCount > 0 ? <TriangleAlert size={14} /> : <CheckCircle2 size={14} />}
+                            {issueCount > 0 ? `${issueCount} conflicts` : workspaceBinding ? "Cloud mapped" : "Local only"}
+                          </span>
+                          <ArrowRight size={15} />
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+
+              <div className="overview-grid">
+                <section className="content-section compact-section">
+                  <div className="section-header">
+                    <div><span className="section-kicker">Transport</span><h2>Cloud readiness</h2></div>
+                    <CloudCog size={18} />
+                  </div>
+                  <div className="status-list">
+                    <div><span className={`status-dot ${rcloneStatus?.available ? "success" : "danger"}`} /><div><strong>Transfer engine</strong><small>{rcloneStatus?.available ? `rclone v${rcloneStatus.version} · ${rcloneStatus.source}` : rcloneStatus?.message ?? "Checking runtime"}</small></div><b>{rcloneStatus?.available ? "Ready" : "Offline"}</b></div>
+                    <div><span className={`status-dot ${googleDrive?.sessionActive ? "success" : "neutral"}`} /><div><strong>Google Drive</strong><small>{googleDrive?.accountLabel ?? googleDrive?.displayName ?? "No account connected"}</small></div><b>{googleDrive?.sessionActive ? "Connected" : "Optional"}</b></div>
+                  </div>
+                  <button className="section-link" onClick={() => setView("settings")}>Manage integrations <ArrowRight size={14} /></button>
+                </section>
+
+                <section className="content-section compact-section">
+                  <div className="section-header">
+                    <div><span className="section-kicker">Safety</span><h2>Local evidence</h2></div>
+                    <ShieldCheck size={18} />
+                  </div>
+                  <div className="evidence-copy">
+                    <strong>Local state stays authoritative until you approve remote operations.</strong>
+                    <p>Workspace scans are journaled before cloud writes are planned. Conflicts and pending changes stay visible instead of being silently overwritten.</p>
+                  </div>
+                  <div className="inline-metrics"><span><b>{totalChanged}</b> changed</span><span><b>{totalPending}</b> queued</span><span><b>{totalConflicts}</b> conflicts</span></div>
+                </section>
               </div>
             </div>
+          )}
 
-            <div className="workspace-meta-grid">
-              <div>
-                <small>Mode</small>
-                <strong>{selected.syncMode === "two_way" ? "Two-Way" : selected.syncMode === "pull" ? "Pull" : "Backup"}</strong>
-                <span>
-                  {selected.syncMode === "two_way"
-                    ? "Conflict-aware local ↔ Drive plans with recoverable deletion propagation."
-                    : selected.syncMode === "pull"
-                      ? "Explicit cloud → local restore mode."
-                      : "Guarded local → cloud writes only."}
-                </span>
-              </div>
-              <div><small>Last scan</small><strong>{formatDate(journal?.lastScanAt ?? report?.scannedAt ?? selected.lastScanAt)}</strong><span>BLAKE3 local inventory</span></div>
-              <div><small>Journal</small><strong>{journal?.presentFiles.toLocaleString() ?? "—"}</strong><span>{journal?.changedFiles ?? 0} changed · SQLite state</span></div>
-              <div><small>Safety queue</small><strong>{journal?.tombstones ?? 0} tombstones</strong><span>{journal?.conflicts ?? 0} conflicts · {journal?.pendingOperations ?? 0} queued</span></div>
-            </div>
-
-            <div className="inventory-card">
-              <div className="inventory-heading">
-                <div>
-                  <p className="eyebrow">Inventory preview</p>
-                  <h3>
-                    {report
-                      ? `${report.fileCount.toLocaleString()} files · ${formatBytes(report.totalBytes)}`
-                      : journal?.lastScanAt
-                        ? `${journal.presentFiles.toLocaleString()} files persisted`
-                        : "Scan to build local inventory"}
-                  </h3>
+          {view === "workspace" && selected && (
+            <div className="page-stack workspace-page">
+              <section className="workspace-identity">
+                <div className="workspace-identity-main">
+                  <span className="workspace-avatar"><FolderOpen size={20} /></span>
+                  <div><div className="workspace-name-line"><h2>{selected.name}</h2><span className="subtle-pill">{syncModeLabel(selected.syncMode)}</span></div><p>{selected.localPath}</p></div>
                 </div>
-                {report && <span className="duration">{report.durationMs} ms</span>}
-              </div>
-
-              {!report ? (
-                <div className="empty-state">
-                  <ScanSearch size={28} />
-                  <strong>{journal?.lastScanAt ? "Inventory is persisted" : "No inventory yet"}</strong>
-                  <p>Local scans are journaled before any cloud write can be planned.</p>
-                  <button className="secondary-button" onClick={handleScan}>Run scan</button>
+                <div className="workspace-command-group">
+                  <button className="button secondary" onClick={handleCreateIgnore} disabled={loading}><ShieldCheck size={15} /> Ignore file</button>
+                  <button className="button primary" onClick={handleScan} disabled={loading}>{loading ? <RefreshCw className="spin" size={15} /> : <ScanSearch size={15} />} Scan workspace</button>
                 </div>
-              ) : (
-                <div className="file-table-wrap">
-                  <table className="file-table">
-                    <thead><tr><th>Path</th><th>Size</th><th>BLAKE3</th></tr></thead>
-                    <tbody>
-                      {report.files.map((file) => (
-                        <tr key={file.relativePath}>
-                          <td><FileCode2 size={14} /><span>{file.relativePath}</span></td>
-                          <td>{formatBytes(file.size)}</td>
-                          <td><code>{file.blake3.slice(0, 16)}…</code></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  {report.previewTruncated && (
-                    <p className="table-note">Preview limited to 250 entries; SQLite contains the complete inventory.</p>
+              </section>
+
+              <section className="workspace-facts">
+                <div><small>Last scan</small><strong>{formatDate(journal?.lastScanAt ?? report?.scannedAt ?? selected.lastScanAt)}</strong><span>BLAKE3 local inventory</span></div>
+                <div><small>Journal</small><strong>{journal?.presentFiles.toLocaleString() ?? "—"} files</strong><span>{journal?.changedFiles ?? 0} changed</span></div>
+                <div><small>Operations</small><strong>{journal?.pendingOperations ?? 0} pending</strong><span>{journal?.tombstones ?? 0} tombstones</span></div>
+                <div className={(journal?.conflicts ?? 0) > 0 ? "attention" : ""}><small>Conflicts</small><strong>{journal?.conflicts ?? 0}</strong><span>{(journal?.conflicts ?? 0) > 0 ? "Review required" : "Clear"}</span></div>
+              </section>
+
+              <div className="workspace-layout">
+                <div className="workspace-primary-column">
+                  <section className="content-section">
+                    <div className="section-header inventory-header">
+                      <div><span className="section-kicker">Local inventory</span><h2>{report ? `${report.fileCount.toLocaleString()} files · ${formatBytes(report.totalBytes)}` : journal?.lastScanAt ? `${journal.presentFiles.toLocaleString()} persisted files` : "Inventory not built yet"}</h2></div>
+                      {report && <span className="duration-pill">{report.durationMs} ms</span>}
+                    </div>
+
+                    {!report ? (
+                      <div className="inventory-empty">
+                        <Database size={22} />
+                        <div><strong>{journal?.lastScanAt ? "A durable inventory already exists" : "Scan this workspace to establish the local baseline"}</strong><p>{journal?.lastScanAt ? "Run another scan whenever you want a fresh preview of the persisted journal." : "No remote write is planned until local evidence exists."}</p></div>
+                        <button className="button secondary" onClick={handleScan}>Run scan</button>
+                      </div>
+                    ) : (
+                      <div className="file-table-wrap">
+                        <table className="file-table">
+                          <thead><tr><th>Path</th><th>Size</th><th>BLAKE3</th></tr></thead>
+                          <tbody>{report.files.map((file) => (
+                            <tr key={file.relativePath}><td><FileCode2 size={13} /><span>{file.relativePath}</span></td><td>{formatBytes(file.size)}</td><td><code>{file.blake3.slice(0, 16)}…</code></td></tr>
+                          ))}</tbody>
+                        </table>
+                        {report.previewTruncated && <p className="table-note">Preview limited to 250 entries. The complete inventory remains in the local journal.</p>}
+                      </div>
+                    )}
+                  </section>
+
+                  <BackupPanel
+                    workspace={selected}
+                    ready={backupReady}
+                    onChanged={refreshAfterBackupChange}
+                    onError={(message) => setError(message)}
+                  />
+                </div>
+
+                <aside className="workspace-side-column">
+                  <section className="content-section remote-section">
+                    <div className="section-header">
+                      <div><span className="section-kicker">Workspace transport</span><h2>Remote mapping</h2></div>
+                      <Cloud size={18} />
+                    </div>
+                    {!googleDrive ? (
+                      <div className="side-state"><CloudCog size={20} /><strong>Google Drive is not connected</strong><p>Connect a transport account in Settings before mapping this workspace.</p><button className="button secondary" onClick={() => setView("settings")}>Open Settings</button></div>
+                    ) : (
+                      <>
+                        <label className="field-group"><span>Remote folder</span><input value={remotePathDraft} onChange={(event) => setRemotePathDraft(event.target.value)} spellCheck={false} /><small>Dedicated folder used only for this workspace.</small></label>
+                        <div className="button-row">
+                          <button className="button secondary" onClick={handleBindRemote} disabled={cloudLoading !== null}><Link2 size={14} /> {binding ? "Update mapping" : "Bind folder"}</button>
+                          <button className="button primary" onClick={handleRemoteScan} disabled={!binding || !googleDrive.sessionActive || cloudLoading !== null}>{cloudLoading === "scan" ? <RefreshCw className="spin" size={14} /> : <ScanSearch size={14} />} Scan remote</button>
+                        </div>
+                        <div className="mapping-status">
+                          <span className={binding ? "success" : "neutral"}>{binding ? <CheckCircle2 size={13} /> : <Link2 size={13} />}{binding ? "Mapped" : "Not mapped"}</span>
+                          <p>{binding?.remotePath ?? "Save a dedicated Drive folder mapping first."}</p>
+                          <small>{remoteReport ? `${remoteReport.fileCount.toLocaleString()} remote files · ${formatBytes(remoteReport.totalBytes)}` : binding?.lastInventoryAt ? `Last remote scan ${formatDate(binding.lastInventoryAt)}` : "Remote inventory not read yet"}</small>
+                        </div>
+                      </>
+                    )}
+                  </section>
+
+                  {binding && googleDrive && (
+                    <EncryptionPanel
+                      workspaceId={selected.id}
+                      ready={encryptionReady}
+                      onError={(message) => setError(message)}
+                    />
                   )}
-                </div>
-              )}
-            </div>
 
-            <div className="danger-row">
-              <div>
-                <strong>Remove workspace</strong>
-                <span>Only AtrisBridge metadata is removed; project files are untouched.</span>
+                  <section className="danger-section">
+                    <div><strong>Remove workspace</strong><p>Only AtrisBridge metadata is removed. Project files stay untouched.</p></div>
+                    <button className="button danger" onClick={handleRemove}><Trash2 size={14} /> Remove</button>
+                  </section>
+                </aside>
               </div>
-              <button className="danger-button" onClick={handleRemove}>
-                <Trash2 size={15} /> Remove
-              </button>
             </div>
-          </section>
-        ) : (
-          <section className="welcome-card">
-            <div className="welcome-copy">
-              <div className="welcome-icon"><ShieldCheck size={27} /></div>
-              <p className="eyebrow">Get started</p>
-              <h2>Protect your first workspace</h2>
-              <p>AtrisBridge builds a local inventory first, then lets you connect transport and review every remote operation.</p>
-              <button className="primary-button" onClick={handleAddWorkspace}>
-                <Plus size={16} /> Choose project folder
-              </button>
+          )}
+
+          {view === "workspace" && !selected && (
+            <div className="product-empty-state standalone"><FolderOpen size={26} /><div><h3>No workspace selected</h3><p>Add a project folder to start building local continuity evidence.</p></div><button className="button primary" onClick={handleAddWorkspace}><Plus size={15} /> Add workspace</button></div>
+          )}
+
+          {view === "activity" && (
+            <div className="page-stack activity-page">
+              <section className="summary-strip activity-summary">
+                <div><small>Changed files</small><strong>{totalChanged}</strong><span>across all workspaces</span></div>
+                <div><small>Pending operations</small><strong>{totalPending}</strong><span>waiting in journal</span></div>
+                <div className={totalConflicts > 0 ? "attention" : "healthy"}><small>Conflicts</small><strong>{totalConflicts}</strong><span>{totalConflicts > 0 ? "Need review" : "No unresolved conflicts"}</span></div>
+              </section>
+
+              <section className="content-section">
+                <div className="section-header"><div><span className="section-kicker">Workspace state</span><h2>Current activity</h2></div><ListChecks size={18} /></div>
+                {workspaces.length === 0 ? (
+                  <div className="inventory-empty"><Activity size={22} /><div><strong>No workspace activity yet</strong><p>Add a workspace first; AtrisBridge will surface journal and synchronization state here.</p></div></div>
+                ) : (
+                  <div className="activity-table">
+                    {workspaces.map((workspace) => {
+                      const summary = summaries[workspace.id];
+                      const issues = summary?.conflicts ?? 0;
+                      return (
+                        <button type="button" key={workspace.id} onClick={() => openWorkspace(workspace)}>
+                          <span className={`activity-state-icon ${issues > 0 ? "attention" : ""}`}>{issues > 0 ? <TriangleAlert size={15} /> : <CheckCircle2 size={15} />}</span>
+                          <span className="activity-main"><strong>{workspace.name}</strong><small>Last scan {formatDate(summary?.lastScanAt ?? workspace.lastScanAt)}</small></span>
+                          <span><small>Changed</small><strong>{summary?.changedFiles ?? 0}</strong></span>
+                          <span><small>Queued</small><strong>{summary?.pendingOperations ?? 0}</strong></span>
+                          <span><small>Conflicts</small><strong>{issues}</strong></span>
+                          <ArrowRight size={15} />
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+
+              <section className="activity-help">
+                <MonitorDot size={18} />
+                <div><strong>Background synchronization status remains available from the compact activity control.</strong><p>Use this page for workspace-level state; the activity control surfaces live watcher and completion notifications.</p></div>
+              </section>
             </div>
-            <ol className="setup-steps">
-              <li><span>1</span><div><strong>Add a workspace</strong><small>Select the project folder you want AtrisBridge to protect.</small></div></li>
-              <li><span>2</span><div><strong>Build local evidence</strong><small>Scan files into the durable BLAKE3-backed journal.</small></div></li>
-              <li><span>3</span><div><strong>Connect when ready</strong><small>Bind Google Drive only after the local baseline is clear.</small></div></li>
-            </ol>
-          </section>
-        )}
+          )}
+
+          {view === "settings" && (
+            <div className="settings-layout">
+              <aside className="settings-index" aria-label="Settings categories">
+                <a href="#general"><SlidersHorizontal size={15} /> General</a>
+                <a href="#integrations"><CloudCog size={15} /> Integrations</a>
+                <a href="#security"><ShieldCheck size={15} /> Security</a>
+                <a href="#about"><HardDrive size={15} /> Runtime</a>
+              </aside>
+
+              <div className="settings-content">
+                <section id="general" className="settings-section">
+                  <div className="settings-heading"><div><span className="section-kicker">General</span><h2>Desktop behavior</h2><p>Choose what happens when the main AtrisBridge window is closed.</p></div></div>
+                  <div className="setting-row">
+                    <div><strong>Keep AtrisBridge running in the tray</strong><p>When enabled, closing the window hides AtrisBridge so background synchronization can continue. When disabled, closing the window quits the application.</p></div>
+                    <label className="toggle-control"><input type="checkbox" checked={closeToTray} onChange={(event) => setCloseToTray(event.target.checked)} /><span aria-hidden="true" /></label>
+                  </div>
+                  <div className="settings-note"><CheckCircle2 size={14} /><span>Current behavior: <strong>{closeToTray ? "Close to tray" : "Quit on close"}</strong>. This preference is saved on this device.</span></div>
+                </section>
+
+                <section id="integrations" className="settings-section">
+                  <div className="settings-heading"><div><span className="section-kicker">Integrations</span><h2>Google Drive</h2><p>Manage the transport account separately from per-workspace folder mappings.</p></div><span className={`settings-status ${googleDrive?.sessionActive ? "success" : "neutral"}`}>{googleDrive?.sessionActive ? <CheckCircle2 size={13} /> : <Cloud size={13} />}{googleDrive?.sessionActive ? "Connected" : "Not connected"}</span></div>
+
+                  <div className="integration-account">
+                    <span className="integration-icon"><Cloud size={18} /></span>
+                    <div><strong>{googleDrive?.accountLabel ?? googleDrive?.displayName ?? "Google Drive"}</strong><p>{googleDrive?.credentialPersisted ? "Credential is protected by the operating-system secure vault." : googleDrive?.sessionActive ? "Connected for this session; secure persistence is unavailable." : "Connect only when you are ready to map workspace folders."}</p></div>
+                    <div className="integration-actions">
+                      <button className={googleDrive?.sessionActive ? "button secondary" : "button primary"} onClick={handleConnectGoogleDrive} disabled={!rcloneStatus?.available || cloudLoading !== null}>{cloudLoading === "connect" ? <RefreshCw className="spin" size={14} /> : <Cloud size={14} />}{googleDrive ? "Reconnect" : "Connect"}</button>
+                      {googleDrive?.sessionActive && <button className="icon-action" onClick={handleDisconnectCloudSession} aria-label="Disconnect Google Drive session" title="Disconnect session"><Unplug size={15} /></button>}
+                      {googleDrive && <button className="icon-action danger" onClick={handleForgetCloud} aria-label="Forget Google Drive connection" title="Forget connection"><Trash2 size={15} /></button>}
+                    </div>
+                  </div>
+                </section>
+
+                <section id="security" className="settings-section">
+                  <div className="settings-heading"><div><span className="section-kicker">Security</span><h2>Protection model</h2><p>AtrisBridge keeps transport credentials and synchronization evidence separated.</p></div></div>
+                  <div className="security-grid">
+                    <div><span><ShieldCheck size={16} /></span><strong>OS secure vault</strong><p>Persisted provider credentials are stored through the operating system credential store, not in frontend storage.</p></div>
+                    <div><span><Database size={16} /></span><strong>Durable local journal</strong><p>Inventory and operation evidence remain local and reviewable before remote changes are accepted.</p></div>
+                    <div><span><FolderSync size={16} /></span><strong>Workspace-scoped transport</strong><p>Each project maps to a dedicated remote folder instead of sharing an implicit global destination.</p></div>
+                  </div>
+                </section>
+
+                <section id="about" className="settings-section">
+                  <div className="settings-heading"><div><span className="section-kicker">Runtime</span><h2>Transfer engine</h2><p>Runtime diagnostics for the pinned rclone transport bundled with AtrisBridge.</p></div></div>
+                  <div className="runtime-setting-row">
+                    <div><span className={`runtime-indicator ${rcloneStatus?.available ? "success" : "danger"}`}><HardDrive size={16} /></span><div><strong>{rcloneStatus?.available ? `rclone v${rcloneStatus.version}` : "rclone unavailable"}</strong><p>{rcloneStatus?.available ? `${rcloneStatus.source} runtime · required v${rcloneStatus.requiredVersion}` : rcloneStatus?.message ?? "Runtime status is still loading."}</p></div></div>
+                    <button className="button secondary" onClick={() => void refreshCloud()} disabled={cloudLoading !== null}><RefreshCw size={14} /> Refresh</button>
+                  </div>
+                </section>
+              </div>
+            </div>
+          )}
+        </div>
       </main>
     </div>
   );
