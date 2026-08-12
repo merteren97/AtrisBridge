@@ -277,6 +277,11 @@ pub fn open_ai_session(
     if requested.is_empty() {
         return Err("An AI session must request at least one capability.".into());
     }
+    if mode == AiSessionMode::IsolatedWorktree
+        && !requested.iter().any(|capability| capability == "git.local")
+    {
+        return Err("Isolated-worktree AI sessions must request the git.local capability.".into());
+    }
     let approved = normalize_capabilities(approved_session_capabilities)?;
     if approved.iter().any(|value| !requested.contains(value)) {
         return Err("Session approval contains a capability that was not requested.".into());

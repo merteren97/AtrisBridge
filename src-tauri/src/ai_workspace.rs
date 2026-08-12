@@ -12,8 +12,7 @@ use tauri::{AppHandle, State};
 
 use crate::{
     ai_gateway::{self, AiAuditEvent, AiSession},
-    scanner,
-    storage::find_workspace,
+    ai_git, scanner,
     workspace_coordinator::{
         WorkspaceMutationCoordinator, WorkspaceMutationLease, WorkspaceOperationKind,
     },
@@ -115,7 +114,8 @@ pub fn ai_file_stat(
     let started = Instant::now();
     let session = ai_gateway::authorize_session(&app, &session_id, "workspace.read")?;
     let result = (|| {
-        let (class, path) = authorize_existing_file_path(&app, &session, &relative_path, false)?;
+        let (class, path) =
+            authorize_existing_file_path(&app, &session, &relative_path, false, &coordinator)?;
         let _lease = acquire_observe(&coordinator, &session)?;
         let (size, blake3) = scanner::fingerprint_file(&path)?;
         Ok(AiFileStat {
@@ -150,7 +150,8 @@ pub fn ai_read_text_file(
     let started = Instant::now();
     let session = ai_gateway::authorize_session(&app, &session_id, "workspace.read")?;
     let result = (|| {
-        let (class, path) = authorize_existing_file_path(&app, &session, &relative_path, false)?;
+        let (class, path) =
+            authorize_existing_file_path(&app, &session, &relative_path, false, &coordinator)?;
         let _lease = acquire_observe(&coordinator, &session)?;
         let (size, blake3) = scanner::fingerprint_file(&path)?;
         if size > MAX_READ_BYTES {
@@ -249,8 +250,7 @@ pub fn ai_search_workspace(
             ai_gateway::authorize_session(&app, &session.id, "sensitive.read")?;
         }
         let _lease = acquire_observe(&coordinator, &session)?;
-        let workspace = find_workspace(&app, &session.workspace_id)?;
-        let root = canonical_workspace_root(&workspace.local_path)?;
+        let root = ai_git::session_workspace_root(&app, &session, &coordinator)?;
         let matcher = build_custom_ignore(&root)?;
         let limit = limit
             .unwrap_or(DEFAULT_SEARCH_LIMIT)
@@ -409,9 +409,9 @@ fn authorize_existing_file_path(
     session: &AiSession,
     relative_path: &str,
     write: bool,
+    coordinator: &WorkspaceMutationCoordinator,
 ) -> Result<(AiPathClass, PathBuf), String> {
-    let workspace = find_workspace(app, &session.workspace_id)?;
-    let root = canonical_workspace_root(&workspace.local_path)?;
+    let root = ai_git::session_workspace_root(app, session, coordinator)?;
     let class = ensure_ai_path_allowed(&root, relative_path)?;
     if class == AiPathClass::Sensitive {
         ai_gateway::authorize_session(

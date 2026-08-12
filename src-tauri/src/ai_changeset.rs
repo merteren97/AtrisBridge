@@ -15,10 +15,10 @@ use uuid::Uuid;
 use crate::{
     ai_artifact_crypto,
     ai_gateway::{self, AiAuditEvent, AiSession},
+    ai_git,
     ai_workspace::{
-        self, canonical_workspace_root, classify_relative_path, ensure_absent,
-        ensure_ai_path_allowed, file_matches, normalize_relative_path, regular_file_evidence,
-        resolve_target_path, AiPathClass,
+        self, classify_relative_path, ensure_absent, ensure_ai_path_allowed, file_matches,
+        normalize_relative_path, regular_file_evidence, resolve_target_path, AiPathClass,
     },
     database::open_database,
     services::workspace as workspace_service,
@@ -140,7 +140,7 @@ pub fn initialize(app: &AppHandle) -> Result<(), String> {
         match rollback_files(app, &stored) {
             Ok(()) => {
                 mark_changeset_rolled_back(app, &id, Some("startup_recovery"))?;
-                let _ = workspace_service::scan(app, &stored.public.workspace_id);
+                let _ = rescan_primary_if_direct(app, &stored);
             }
             Err(error) => {
                 mark_changeset_recovery_required(app, &id, "startup_recovery_failed")?;
@@ -264,8 +264,7 @@ fn prepare_changeset_inner(
         ));
     }
     let _lease = acquire_plan(coordinator, session)?;
-    let workspace = find_workspace(app, &session.workspace_id)?;
-    let root = canonical_workspace_root(&workspace.local_path)?;
+    let root = ai_git::session_workspace_root(app, session, coordinator)?;
     let id = Uuid::new_v4().to_string();
     let payload_root = changeset_root(app, &id)?.join("payload");
     fs::create_dir_all(&payload_root)
@@ -476,8 +475,7 @@ fn execute_changeset_inner(
     }
     authorize_changeset_capabilities(app, session, &stored)?;
     let _lease = acquire_edit(coordinator, session)?;
-    let workspace = find_workspace(app, &session.workspace_id)?;
-    let root = canonical_workspace_root(&workspace.local_path)?;
+    let root = ai_git::session_workspace_root(app, session, coordinator)?;
     preflight_changeset(&root, &stored)?;
     prepare_recovery_snapshots(app, &root, &stored)?;
     set_changeset_status(app, changeset_id, "applying", None)?;
@@ -493,7 +491,7 @@ fn execute_changeset_inner(
                         changeset_id,
                         Some("apply_failed_rolled_back"),
                     )?;
-                    let _ = workspace_service::scan(app, &session.workspace_id);
+                    let _ = rescan_primary_if_direct(app, &latest);
                     Err(format!("{error} Applied changes were rolled back safely."))
                 }
                 Err(rollback_error) => {
@@ -521,7 +519,7 @@ fn execute_changeset_inner(
             params![now, changeset_id],
         )
         .map_err(|error| format!("Could not finalize AI changeset journal: {error}"))?;
-    workspace_service::scan(app, &session.workspace_id)?;
+    rescan_primary_if_direct(app, &stored)?;
     load_stored_changeset(app, changeset_id).map(|stored| stored.public)
 }
 
@@ -546,7 +544,7 @@ fn undo_changeset_inner(
     match rollback_files(app, &latest) {
         Ok(()) => {
             mark_changeset_rolled_back(app, changeset_id, Some("user_undo"))?;
-            workspace_service::scan(app, &session.workspace_id)?;
+            rescan_primary_if_direct(app, &stored)?;
             load_stored_changeset(app, changeset_id).map(|stored| stored.public)
         }
         Err(error) => {
@@ -556,6 +554,13 @@ fn undo_changeset_inner(
             ))
         }
     }
+}
+
+fn rescan_primary_if_direct(app: &AppHandle, stored: &StoredChangeset) -> Result<(), String> {
+    if ai_git::changeset_targets_primary_workspace(app, &stored.public.session_id)? {
+        workspace_service::scan(app, &stored.public.workspace_id)?;
+    }
+    Ok(())
 }
 
 fn preflight_changeset(root: &Path, stored: &StoredChangeset) -> Result<(), String> {
@@ -748,8 +753,11 @@ fn place_payload(target: &Path, item: &StoredChangesetItem, replace: bool) -> Re
 }
 
 fn rollback_files(app: &AppHandle, stored: &StoredChangeset) -> Result<(), String> {
-    let workspace = find_workspace(app, &stored.public.workspace_id)?;
-    let root = canonical_workspace_root(&workspace.local_path)?;
+    let root = ai_git::changeset_workspace_root(
+        app,
+        &stored.public.workspace_id,
+        &stored.public.session_id,
+    )?;
     for item in stored.items.iter().rev() {
         rollback_item(app, &root, stored, item)?;
         mark_item_status(app, &item.public.id, "rolled_back")?;
@@ -836,8 +844,11 @@ fn restore_recovery_snapshot(
     replace_target: bool,
 ) -> Result<(), String> {
     let recovery = validate_recovery_snapshot(app, stored, item)?;
-    let target_workspace = find_workspace(app, &stored.public.workspace_id)?;
-    let root = canonical_workspace_root(&target_workspace.local_path)?;
+    let root = ai_git::changeset_workspace_root(
+        app,
+        &stored.public.workspace_id,
+        &stored.public.session_id,
+    )?;
     let target = resolve_target_path(&root, &item.public.relative_path, true)?;
     let stage = same_directory_stage_path(&target, &format!("{}-rollback", item.public.id))?;
     ensure_absent(&stage, "AI rollback staging artifact")?;
