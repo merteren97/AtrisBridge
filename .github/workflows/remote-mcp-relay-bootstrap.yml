@@ -11,12 +11,29 @@ permissions:
 jobs:
   bootstrap:
     if: github.actor != 'github-actions[bot]'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
         with:
           ref: feat/remote-mcp-desktop-relay
           fetch-depth: 0
+      - name: Install Tauri Linux dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            unzip \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsecret-1-dev \
+            libxkbcommon-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.97.0
@@ -25,273 +42,197 @@ jobs:
         run: |
           python3 <<'PY'
           from pathlib import Path
+          import re
 
           auth = Path('src-tauri/src/atris_auth.rs')
           text = auth.read_text()
-          text = text.replace(
-              'use reqwest::{\n',
-              'use chrono::{DateTime, Duration as ChronoDuration, Utc};\nuse reqwest::{\n',
-              1,
-          )
-          text = text.replace(
-              'const REQUEST_TIMEOUT_SECONDS: u64 = 20;\n',
-              'const REQUEST_TIMEOUT_SECONDS: u64 = 20;\nconst RELAY_REFRESH_MARGIN_SECONDS: i64 = 120;\n',
-              1,
-          )
-          old_runtime = '''#[derive(Default)]
-          struct AuthRuntime {
-              access_token: Option<String>,
-              volatile_refresh_token: Option<String>,
-              snapshot: Option<AuthSnapshot>,
-          }
-          '''.replace('          ', '')
-          new_runtime = '''#[derive(Default)]
-          struct AuthRuntime {
-              access_token: Option<String>,
-              access_token_expires_at: Option<DateTime<Utc>>,
-              volatile_refresh_token: Option<String>,
-              snapshot: Option<AuthSnapshot>,
-          }
+          if 'use chrono::{DateTime, Duration as ChronoDuration, Utc};' not in text:
+              text = text.replace('use reqwest::{\n', 'use chrono::{DateTime, Duration as ChronoDuration, Utc};\nuse reqwest::{\n', 1)
+          if 'RELAY_REFRESH_MARGIN_SECONDS' not in text:
+              text = text.replace('const REQUEST_TIMEOUT_SECONDS: u64 = 20;\n', 'const REQUEST_TIMEOUT_SECONDS: u64 = 20;\nconst RELAY_REFRESH_MARGIN_SECONDS: i64 = 120;\n', 1)
 
-          #[derive(Debug, Clone)]
-          pub(crate) struct DesktopRelayCredential {
-              pub(crate) user_id: String,
-              pub(crate) device_id: String,
-              pub(crate) access_token: String,
-          }
-          '''.replace('          ', '')
-          if old_runtime not in text:
-              raise SystemExit('AuthRuntime anchor not found')
-          text = text.replace(old_runtime, new_runtime, 1)
+          runtime_re = re.compile(r'#\[derive\(Default\)\]\nstruct AuthRuntime \{.*?\n\}\n', re.S)
+          runtime = '''#[derive(Default)]
+struct AuthRuntime {
+    access_token: Option<String>,
+    access_token_expires_at: Option<DateTime<Utc>>,
+    volatile_refresh_token: Option<String>,
+    snapshot: Option<AuthSnapshot>,
+}
 
-          old_commit = '''fn commit_session(
-              app: &AppHandle,
-              state: &AtrisHubAuthState,
-              response: DesktopSessionResponse,
-              remember: bool,
-          ) -> Result<AuthSnapshot, String> {
-              if remember {
-                  if let Err(error) = secure_store::store_atrishub_refresh_token(&response.refresh_token) {
-                      send_logout(&response.refresh_token);
-                      return Err(error);
-                  }
-              } else {
-                  secure_store::delete_atrishub_refresh_token()?;
-              }
-              let snapshot = AuthSnapshot::signed_in(&response, remember);
-              cache_snapshot(app, &snapshot)?;
-              let mut runtime = state
-                  .inner
-                  .lock()
-                  .map_err(|_| "AtrisHub authentication state is unavailable.".to_string())?;
-              runtime.access_token = Some(response.access_token);
-              runtime.volatile_refresh_token = (!remember).then_some(response.refresh_token);
-              runtime.snapshot = Some(snapshot.clone());
-              Ok(snapshot)
-          }
-          '''.replace('          ', '')
-          new_commit = '''fn commit_session(
-              app: &AppHandle,
-              state: &AtrisHubAuthState,
-              response: DesktopSessionResponse,
-              remember: bool,
-          ) -> Result<AuthSnapshot, String> {
-              let access_token_expires_at = DateTime::parse_from_rfc3339(&response.access_token_expires_at)
-                  .map(|value| value.with_timezone(&Utc))
-                  .map_err(|_| "AtrisHub returned an invalid desktop access-token expiry.".to_string())?;
-              if access_token_expires_at <= Utc::now() {
-                  return Err("AtrisHub returned an already expired desktop access token.".into());
-              }
-              if remember {
-                  if let Err(error) = secure_store::store_atrishub_refresh_token(&response.refresh_token) {
-                      send_logout(&response.refresh_token);
-                      return Err(error);
-                  }
-              } else {
-                  secure_store::delete_atrishub_refresh_token()?;
-              }
-              let snapshot = AuthSnapshot::signed_in(&response, remember);
-              cache_snapshot(app, &snapshot)?;
-              let mut runtime = state
-                  .inner
-                  .lock()
-                  .map_err(|_| "AtrisHub authentication state is unavailable.".to_string())?;
-              runtime.access_token = Some(response.access_token);
-              runtime.access_token_expires_at = Some(access_token_expires_at);
-              runtime.volatile_refresh_token = (!remember).then_some(response.refresh_token);
-              runtime.snapshot = Some(snapshot.clone());
-              Ok(snapshot)
-          }
+#[derive(Debug, Clone)]
+pub(crate) struct DesktopRelayCredential {
+    pub(crate) user_id: String,
+    pub(crate) device_id: String,
+    pub(crate) access_token: String,
+}
+'''
+          text, count = runtime_re.subn(runtime, text, count=1)
+          if count != 1:
+              raise SystemExit('AuthRuntime boundary not found')
 
-          fn current_desktop_relay_credential(
-              app: &AppHandle,
-              state: &AtrisHubAuthState,
-          ) -> Result<Option<DesktopRelayCredential>, String> {
-              let runtime = state
-                  .inner
-                  .lock()
-                  .map_err(|_| "AtrisHub authentication state is unavailable.".to_string())?;
-              let Some(snapshot) = runtime.snapshot.as_ref() else {
-                  return Ok(None);
-              };
-              let Some(user) = snapshot.user.as_ref() else {
-                  return Ok(None);
-              };
-              let Some(access_token) = runtime.access_token.as_ref() else {
-                  return Ok(None);
-              };
-              let Some(expires_at) = runtime.access_token_expires_at else {
-                  return Ok(None);
-              };
-              if expires_at <= Utc::now() + ChronoDuration::seconds(RELAY_REFRESH_MARGIN_SECONDS) {
-                  return Ok(None);
-              }
-              let user_id = user.id.clone();
-              let access_token = access_token.clone();
-              drop(runtime);
-              Ok(Some(DesktopRelayCredential {
-                  user_id,
-                  device_id: get_or_create_device_id(app)?,
-                  access_token,
-              }))
-          }
+          relay_auth = '''fn commit_session(
+    app: &AppHandle,
+    state: &AtrisHubAuthState,
+    response: DesktopSessionResponse,
+    remember: bool,
+) -> Result<AuthSnapshot, String> {
+    let access_token_expires_at = DateTime::parse_from_rfc3339(&response.access_token_expires_at)
+        .map(|value| value.with_timezone(&Utc))
+        .map_err(|_| "AtrisHub returned an invalid desktop access-token expiry.".to_string())?;
+    if access_token_expires_at <= Utc::now() {
+        return Err("AtrisHub returned an already expired desktop access token.".into());
+    }
+    if remember {
+        if let Err(error) = secure_store::store_atrishub_refresh_token(&response.refresh_token) {
+            send_logout(&response.refresh_token);
+            return Err(error);
+        }
+    } else {
+        secure_store::delete_atrishub_refresh_token()?;
+    }
+    let snapshot = AuthSnapshot::signed_in(&response, remember);
+    cache_snapshot(app, &snapshot)?;
+    let mut runtime = state
+        .inner
+        .lock()
+        .map_err(|_| "AtrisHub authentication state is unavailable.".to_string())?;
+    runtime.access_token = Some(response.access_token);
+    runtime.access_token_expires_at = Some(access_token_expires_at);
+    runtime.volatile_refresh_token = (!remember).then_some(response.refresh_token);
+    runtime.snapshot = Some(snapshot.clone());
+    Ok(snapshot)
+}
 
-          pub(crate) fn desktop_relay_credential(
-              app: &AppHandle,
-              state: &AtrisHubAuthState,
-          ) -> Result<Option<DesktopRelayCredential>, String> {
-              if let Some(current) = current_desktop_relay_credential(app, state)? {
-                  return Ok(Some(current));
-              }
+fn current_desktop_relay_credential(
+    app: &AppHandle,
+    state: &AtrisHubAuthState,
+) -> Result<Option<DesktopRelayCredential>, String> {
+    let runtime = state
+        .inner
+        .lock()
+        .map_err(|_| "AtrisHub authentication state is unavailable.".to_string())?;
+    let Some(snapshot) = runtime.snapshot.as_ref() else {
+        return Ok(None);
+    };
+    let Some(user) = snapshot.user.as_ref() else {
+        return Ok(None);
+    };
+    let Some(access_token) = runtime.access_token.as_ref() else {
+        return Ok(None);
+    };
+    let Some(expires_at) = runtime.access_token_expires_at.as_ref() else {
+        return Ok(None);
+    };
+    if *expires_at <= Utc::now() + ChronoDuration::seconds(RELAY_REFRESH_MARGIN_SECONDS) {
+        return Ok(None);
+    }
+    let user_id = user.id.clone();
+    let access_token = access_token.clone();
+    drop(runtime);
+    Ok(Some(DesktopRelayCredential {
+        user_id,
+        device_id: get_or_create_device_id(app)?,
+        access_token,
+    }))
+}
 
-              let _refresh_operation = AUTH_REFRESH_LOCK
-                  .lock()
-                  .map_err(|_| "AtrisHub refresh operation lock is unavailable.".to_string())?;
-              if let Some(current) = current_desktop_relay_credential(app, state)? {
-                  return Ok(Some(current));
-              }
-
-              let remembered = secure_store::load_atrishub_refresh_token()?;
-              let volatile = state
-                  .inner
-                  .lock()
-                  .map_err(|_| "AtrisHub authentication state is unavailable.".to_string())?
-                  .volatile_refresh_token
-                  .clone();
-              let remember = remembered.is_some();
-              let Some(refresh_token) = remembered.as_deref().or(volatile.as_deref()) else {
-                  return Ok(None);
-              };
-
-              match send_refresh(refresh_token) {
-                  Ok(response) => {
-                      commit_session(app, state, response, remember)?;
-                      current_desktop_relay_credential(app, state)
-                  }
-                  Err(failure) if matches!(failure.kind, FailureKind::Network | FailureKind::Server) => {
-                      Err(failure.message)
-                  }
-                  Err(failure) => {
-                      clear_local_identity(app)?;
-                      let mut runtime = state
-                          .inner
-                          .lock()
-                          .map_err(|_| "AtrisHub authentication state is unavailable.".to_string())?;
-                      *runtime = AuthRuntime::default();
-                      Err(failure.message)
-                  }
-              }
-          }
-          '''.replace('          ', '')
-          if old_commit not in text:
-              raise SystemExit('commit_session anchor not found')
-          text = text.replace(old_commit, new_commit, 1)
+pub(crate) fn desktop_relay_credential(
+    app: &AppHandle,
+    state: &AtrisHubAuthState,
+) -> Result<Option<DesktopRelayCredential>, String> {
+    if let Some(current) = current_desktop_relay_credential(app, state)? {
+        return Ok(Some(current));
+    }
+    let _refresh_operation = AUTH_REFRESH_LOCK
+        .lock()
+        .map_err(|_| "AtrisHub refresh operation lock is unavailable.".to_string())?;
+    if let Some(current) = current_desktop_relay_credential(app, state)? {
+        return Ok(Some(current));
+    }
+    let remembered = secure_store::load_atrishub_refresh_token()?;
+    let volatile = state
+        .inner
+        .lock()
+        .map_err(|_| "AtrisHub authentication state is unavailable.".to_string())?
+        .volatile_refresh_token
+        .clone();
+    let remember = remembered.is_some();
+    let Some(refresh_token) = remembered.as_deref().or(volatile.as_deref()) else {
+        return Ok(None);
+    };
+    match send_refresh(refresh_token) {
+        Ok(response) => {
+            commit_session(app, state, response, remember)?;
+            current_desktop_relay_credential(app, state)
+        }
+        Err(failure) if matches!(failure.kind, FailureKind::Network | FailureKind::Server) => Err(failure.message),
+        Err(failure) => {
+            clear_local_identity(app)?;
+            let mut runtime = state
+                .inner
+                .lock()
+                .map_err(|_| "AtrisHub authentication state is unavailable.".to_string())?;
+            *runtime = AuthRuntime::default();
+            Err(failure.message)
+        }
+    }
+}
+'''
+          start = text.index('fn commit_session(')
+          end = text.index('\nfn set_runtime_snapshot(', start)
+          text = text[:start] + relay_auth + text[end + 1:]
           auth.write_text(text)
 
           ipc = Path('src-tauri/src/local_mcp_ipc.rs')
           text = ipc.read_text()
-          anchor = 'fn redact_local_paths(app: &AppHandle, message: &str) -> String {'
-          if anchor not in text:
-              raise SystemExit('redact_local_paths anchor not found')
-          text = text.replace(anchor, 'pub(crate) fn redact_local_paths(app: &AppHandle, message: &str) -> String {', 1)
+          text = text.replace('fn redact_local_paths(app: &AppHandle, message: &str) -> String {', 'pub(crate) fn redact_local_paths(app: &AppHandle, message: &str) -> String {', 1)
           ipc.write_text(text)
 
           lib = Path('src-tauri/src/lib.rs')
           text = lib.read_text()
           if 'mod remote_mcp_relay;' not in text:
               text = text.replace('mod restore;\n', 'mod remote_mcp_relay;\nmod restore;\n', 1)
-          setup_anchor = '''            if let Err(error) = local_mcp_ipc::setup(app.handle()) {
-                          eprintln!("AtrisBridge local MCP authority is unavailable: {error}");
-                      }
-                      Ok(())
-          '''.replace('          ', '')
-          setup_new = '''            if let Err(error) = local_mcp_ipc::setup(app.handle()) {
-                          eprintln!("AtrisBridge local MCP authority is unavailable: {error}");
-                      }
-                      remote_mcp_relay::setup(app.handle());
-                      Ok(())
-          '''.replace('          ', '')
-          if setup_anchor not in text:
-              raise SystemExit('lib setup anchor not found')
-          text = text.replace(setup_anchor, setup_new, 1)
+          if 'remote_mcp_relay::setup(app.handle());' not in text:
+              local_setup = text.index('if let Err(error) = local_mcp_ipc::setup(app.handle()) {')
+              ok = text.index('            Ok(())', local_setup)
+              text = text[:ok] + '            remote_mcp_relay::setup(app.handle());\n' + text[ok:]
           lib.write_text(text)
 
           cargo = Path('src-tauri/Cargo.toml')
-          text = cargo.read_text()
-          deps = '''
-          futures-util = "0.3.31"
-          sha2 = "0.10.9"
-          tokio = { version = "1", features = ["sync", "time"] }
-          tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
-          '''.replace('          ', '')
-          if 'tokio-tungstenite' not in text:
-              text = text.rstrip() + '\n' + deps
+          text = cargo.read_text().rstrip() + '\n'
+          for key, line in [
+              ('futures-util', 'futures-util = "0.3.31"'),
+              ('sha2', 'sha2 = "0.10.9"'),
+              ('tokio', 'tokio = { version = "1", features = ["net", "sync", "time"] }'),
+              ('tokio-tungstenite', 'tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }'),
+          ]:
+              if not any(line0.strip().startswith(key + ' =') for line0 in text.splitlines()):
+                  text += line + '\n'
           cargo.write_text(text)
 
           relay = Path('src-tauri/src/remote_mcp_relay.rs')
           text = relay.read_text()
           text = text.replace('mcp.remote.87daa3985036671953760490bb3d0b1c', 'mcp.remote.b44ea687b506d5ca725c434cbe69d0cd')
-          text = text.replace(
-              '''                        let worker_app = app.clone();
-                                      let worker_credential = credential.clone();
-                                      let worker_tx = outgoing_tx.clone();
-                                      tauri::async_runtime::spawn(async move {
-                                          let response = tauri::async_runtime::spawn_blocking(move || {
-              '''.replace('                                      ', ''),
-              '''                        let worker_app = app.clone();
-                                      let worker_credential = credential.clone();
-                                      let worker_tx = outgoing_tx.clone();
-                                      let worker_request_id = request.request_id.clone();
-                                      let worker_reply_to = request.reply_to.clone();
-                                      tauri::async_runtime::spawn(async move {
-                                          let response = tauri::async_runtime::spawn_blocking(move || {
-              '''.replace('                                      ', ''),
-              1,
-          )
-          text = text.replace(
-              '''                                Ok(value) => value,
-                                              Err(error) => json!({
-                                                  "type": "relay_response",
-                                                  "version": 1,
-                                                  "requestId": "worker-failed",
-                                                  "replyTo": "unknown",
-                                                  "ok": false,
-                                                  "error": {
-                                                      "code": "desktop_worker_failed",
-                                                      "message": bounded_error(&format!("Remote MCP worker failed: {error}")),
-                                                  }
-                                              }),
-              '''.replace('                                              ', ''),
-              '''                                Ok(value) => value,
-                                              Err(error) => relay_error_response_parts(
-                                                  &worker_request_id,
-                                                  &worker_reply_to,
-                                                  "desktop_worker_failed",
-                                                  &format!("Remote MCP worker failed: {error}"),
-                                              ),
-              '''.replace('                                              ', ''),
-              1,
-          )
+          text = text.replace('serde_json::from_str(text.as_str())', 'serde_json::from_str(text.as_ref())')
+          text = text.replace('                    Message::Frame(_) => {}\n', '')
+          if 'let worker_request_id = request.request_id.clone();' not in text:
+              marker = '                        let worker_tx = outgoing_tx.clone();\n'
+              pos = text.index(marker) + len(marker)
+              text = text[:pos] + '                        let worker_request_id = request.request_id.clone();\n                        let worker_reply_to = request.reply_to.clone();\n' + text[pos:]
+          start = text.index('                            let value = match response {')
+          end = text.index('                            let _ = send_json(&worker_tx, value).await;', start)
+          replacement = '''                            let value = match response {
+                                Ok(value) => value,
+                                Err(error) => relay_error_response_parts(
+                                    &worker_request_id,
+                                    &worker_reply_to,
+                                    "desktop_worker_failed",
+                                    &format!("Remote MCP worker failed: {error}"),
+                                ),
+                            };
+'''
+          text = text[:start] + replacement + text[end:]
           relay.write_text(text)
           PY
       - name: Format and resolve Rust dependencies
@@ -300,11 +241,11 @@ jobs:
           cargo fmt --all
           cargo check --lib
           cargo test --lib
-      - name: Remove bootstrap workflow and commit generated lockfile
+      - name: Commit clean product tree
         run: |
-          rm .github/workflows/remote-mcp-relay-bootstrap.yml
+          rm -f .github/workflows/remote-mcp-relay-bootstrap.yml .github/workflows/remote-mcp-relay-bootstrap-fix.yml .github/workflows/remote-mcp-relay-bootstrap-final.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/src/atris_auth.rs src-tauri/src/lib.rs src-tauri/src/local_mcp_ipc.rs src-tauri/src/remote_mcp_relay.rs .github/workflows/remote-mcp-relay-bootstrap.yml
+          git add -A
           git commit -m "Wire authenticated remote MCP desktop relay"
           git push origin HEAD:feat/remote-mcp-desktop-relay
