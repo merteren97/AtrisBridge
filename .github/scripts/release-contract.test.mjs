@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createPackageBuildConfig } from "./create-package-build-config.mjs";
-import { channelForTag, createUpdaterBuildConfig, updaterEndpoint } from "./create-updater-build-config.mjs";
+import { channelForTag, createUpdaterBuildConfig, updaterEndpoint, writeUpdaterBuildConfig } from "./create-updater-build-config.mjs";
 import { generateUpdaterManifest } from "./generate-updater-manifest.mjs";
 
 test("package config bundles the verified rclone resource", () => {
@@ -28,6 +28,23 @@ test("release updater config fails closed without a public key", () => {
   const config = createUpdaterBuildConfig("PUBLIC_KEY", "v0.1.0-alpha.8");
   assert.equal(config.bundle.createUpdaterArtifacts, true);
   assert.equal(config.plugins.updater.windows.installMode, "passive");
+});
+
+test("updater config falls back to RELEASE_TAG when a shell expands the CLI tag to empty", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "atrisbridge-updater-config-"));
+  const previousReleaseTag = process.env.RELEASE_TAG;
+  try {
+    process.env.RELEASE_TAG = "v1.2.3";
+    const outputPath = path.join(root, "tauri.release.conf.json");
+    writeUpdaterBuildConfig(outputPath, "", "PUBLIC_KEY");
+    const config = JSON.parse(fs.readFileSync(outputPath, "utf8"));
+    assert.match(config.plugins.updater.endpoints[0], /channel=stable$/);
+    assert.equal(config.plugins.updater.pubkey, "PUBLIC_KEY");
+  } finally {
+    if (previousReleaseTag === undefined) delete process.env.RELEASE_TAG;
+    else process.env.RELEASE_TAG = previousReleaseTag;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("manifest contains signed canonical Windows and Linux updater targets", () => {
