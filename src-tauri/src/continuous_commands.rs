@@ -2,7 +2,7 @@ use rusqlite::{params, OptionalExtension};
 use tauri::{AppHandle, State};
 
 use crate::{
-    commands, continuous,
+    commands,
     continuous::ContinuousSyncManager,
     database::open_database,
     encryption,
@@ -240,25 +240,14 @@ pub async fn guarded_restore_sync_recovery(
 }
 
 fn acquire_manual(
-    app: &AppHandle,
+    _app: &AppHandle,
     workspace_id: &str,
     coordinator: &WorkspaceMutationCoordinator,
     kind: WorkspaceOperationKind,
 ) -> Result<WorkspaceMutationLease, String> {
-    ensure_manual_control_allowed(app, workspace_id)?;
     coordinator
         .acquire(workspace_id, "desktop-manual", kind)
         .map_err(|error| error.to_string())
-}
-
-fn ensure_manual_control_allowed(app: &AppHandle, workspace_id: &str) -> Result<(), String> {
-    if continuous::is_enabled(app, workspace_id)? {
-        return Err(
-            "Continuous watch mode currently owns this workspace. Pause watch mode before scanning manually, changing bindings/sync mode/encryption setup, importing recovery keys, restoring recovery files, or running a manual plan."
-                .into(),
-        );
-    }
-    Ok(())
 }
 
 fn ensure_no_watched_workspaces(app: &AppHandle) -> Result<(), String> {
