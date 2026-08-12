@@ -68,6 +68,7 @@ pub fn run() {
             ai_gateway::close_ai_session,
             ai_gateway::list_ai_sessions,
             ai_gateway::list_ai_audit,
+            desktop_shell::set_close_to_tray,
             ai_workspace::ai_file_stat,
             ai_workspace::ai_read_text_file,
             ai_workspace::ai_search_workspace,
