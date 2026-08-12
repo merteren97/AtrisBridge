@@ -154,7 +154,10 @@ pub fn ai_gateway_overview(app: AppHandle) -> Result<AiGatewayOverview, String> 
     expire_sessions(&connection)?;
     let active_sessions = count_active_sessions(&connection)?;
     Ok(AiGatewayOverview {
-        capabilities: AI_CAPABILITIES.iter().map(|value| (*value).to_string()).collect(),
+        capabilities: AI_CAPABILITIES
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect(),
         active_sessions,
         permission_model: "default_ask_explicit_workspace_client_rules",
         audit_content_policy: "metadata_only_no_prompts_credentials_or_file_content",
@@ -314,7 +317,14 @@ pub fn open_ai_session(
                 id, client_id, workspace_id, mode, status,
                 created_at, last_activity_at, expires_at
              ) VALUES (?1, ?2, ?3, ?4, 'active', ?5, ?5, ?6)",
-            params![id, client_id, workspace_id, mode.as_str(), created_at, expires_at],
+            params![
+                id,
+                client_id,
+                workspace_id,
+                mode.as_str(),
+                created_at,
+                expires_at
+            ],
         )
         .map_err(|error| format!("Could not create AI session: {error}"))?;
     for (capability, source) in &grants {
@@ -404,7 +414,9 @@ pub fn list_ai_audit(
     limit: Option<u32>,
 ) -> Result<Vec<AiAuditEntry>, String> {
     find_workspace(&app, &workspace_id)?;
-    let limit = limit.unwrap_or(DEFAULT_AUDIT_LIMIT).clamp(1, MAX_AUDIT_LIMIT);
+    let limit = limit
+        .unwrap_or(DEFAULT_AUDIT_LIMIT)
+        .clamp(1, MAX_AUDIT_LIMIT);
     let connection = open_ai_database(&app)?;
     let mut statement = connection
         .prepare(
@@ -463,7 +475,10 @@ pub fn authorize_session(
     let session = load_session(&connection, session_id)?
         .ok_or_else(|| "AI session was not found.".to_string())?;
     if session.status != "active" {
-        return Err(format!("AI session is not active (status: {}).", session.status));
+        return Err(format!(
+            "AI session is not active (status: {}).",
+            session.status
+        ));
     }
     if !session.capabilities.iter().any(|value| value == capability) {
         return Err(format!(
@@ -642,7 +657,10 @@ fn load_session(connection: &Connection, session_id: &str) -> Result<Option<AiSe
     }))
 }
 
-fn load_sessions(connection: &Connection, workspace_id: Option<&str>) -> Result<Vec<AiSession>, String> {
+fn load_sessions(
+    connection: &Connection,
+    workspace_id: Option<&str>,
+) -> Result<Vec<AiSession>, String> {
     let sql = if workspace_id.is_some() {
         "SELECT id FROM ai_sessions WHERE workspace_id = ?1 ORDER BY created_at DESC"
     } else {
