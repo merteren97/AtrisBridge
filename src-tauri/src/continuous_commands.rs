@@ -5,17 +5,19 @@ use crate::{
     commands, continuous,
     continuous::ContinuousSyncManager,
     database::open_database,
-    encryption,
+    encryption, google_drive_identity,
     models::{
         BackupExecutionReport, BackupPlan, EncryptionEnableResult, ProviderConnection,
         RemoteInventoryReport, ScanReport, SyncMode, Workspace, WorkspaceEncryptionStatus,
         WorkspaceRemoteBinding,
     },
     provider_sessions::ProviderSessionStore,
+    provider_storage,
     restore::{self, RestoreExecutionReport, RestorePlan},
     services::workspace as workspace_service,
     sync::{self, SyncExecutionReport, SyncPlan},
     sync_recovery::{self, SyncRecoveryEntry},
+    transport::rclone,
     workspace_coordinator::{
         WorkspaceMutationCoordinator, WorkspaceMutationLease, WorkspaceOperationKind,
     },
@@ -59,7 +61,29 @@ pub async fn guarded_connect_google_drive(
     sessions: State<'_, ProviderSessionStore>,
 ) -> Result<ProviderConnection, String> {
     ensure_no_watched_workspaces(&app)?;
-    commands::connect_google_drive(app, sessions).await
+
+    let authorize_app = app.clone();
+    let token = tauri::async_runtime::spawn_blocking(move || {
+        rclone::authorize_google_drive(&authorize_app)
+    })
+    .await
+    .map_err(|error| format!("Google authorization worker failed: {error}"))??;
+
+    let verify_app = app.clone();
+    let verify_token = token.clone();
+    let account_label = tauri::async_runtime::spawn_blocking(move || {
+        rclone::verify_google_drive(&verify_app, &verify_token)?;
+        google_drive_identity::account_label_from_token(&verify_token)
+    })
+    .await
+    .map_err(|error| format!("Google verification worker failed: {error}"))??;
+
+    let mut provider =
+        provider_storage::upsert_google_drive_connection(&app, Some(account_label))?;
+    sessions.set_google_drive_token(&provider.id, token)?;
+    provider.session_active = true;
+    provider.credential_persisted = true;
+    Ok(provider)
 }
 
 #[tauri::command]
