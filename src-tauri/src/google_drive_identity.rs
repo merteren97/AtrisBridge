@@ -1,7 +1,10 @@
+use std::time::Duration;
+
 use reqwest::blocking::Client;
 use serde::Deserialize;
 
 const DRIVE_ABOUT_URL: &str = "https://www.googleapis.com/drive/v3/about";
+const DRIVE_ACCOUNT_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Deserialize)]
 struct OAuthToken {
@@ -29,7 +32,11 @@ pub fn account_label_from_token(token_json: &str) -> Result<String, String> {
         return Err("Google authorization completed without an access token.".into());
     }
 
-    let response = Client::new()
+    let client = Client::builder()
+        .timeout(DRIVE_ACCOUNT_TIMEOUT)
+        .build()
+        .map_err(|error| format!("Could not prepare Google Drive account verification: {error}"))?;
+    let response = client
         .get(DRIVE_ABOUT_URL)
         .query(&[("fields", "user(displayName,emailAddress,permissionId)")])
         .bearer_auth(access_token)
@@ -76,7 +83,10 @@ mod tests {
             email_address: Some("mert@example.com".into()),
             permission_id: Some("permission-1".into()),
         };
-        assert_eq!(account_label_from_user(Some(&user)).as_deref(), Some("mert@example.com"));
+        assert_eq!(
+            account_label_from_user(Some(&user)).as_deref(),
+            Some("mert@example.com")
+        );
     }
 
     #[test]
@@ -86,7 +96,10 @@ mod tests {
             email_address: None,
             permission_id: Some("permission-1".into()),
         };
-        assert_eq!(account_label_from_user(Some(&user)).as_deref(), Some("drive:permission-1"));
+        assert_eq!(
+            account_label_from_user(Some(&user)).as_deref(),
+            Some("drive:permission-1")
+        );
     }
 
     #[test]
@@ -96,6 +109,9 @@ mod tests {
             email_address: None,
             permission_id: None,
         };
-        assert_eq!(account_label_from_user(Some(&user)).as_deref(), Some("Mert"));
+        assert_eq!(
+            account_label_from_user(Some(&user)).as_deref(),
+            Some("Mert")
+        );
     }
 }
