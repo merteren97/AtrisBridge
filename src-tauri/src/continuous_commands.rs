@@ -28,12 +28,7 @@ pub fn guarded_remove_workspace(
     manager: State<'_, ContinuousSyncManager>,
     coordinator: State<'_, WorkspaceMutationCoordinator>,
 ) -> Result<(), String> {
-    let _lease = acquire_manual(
-        &app,
-        &id,
-        &coordinator,
-        WorkspaceOperationKind::Configure,
-    )?;
+    let _lease = acquire_manual(&app, &id, &coordinator, WorkspaceOperationKind::Configure)?;
     manager.stop_workspace(&id)?;
     workspace_service::remove(&app, &id)
 }
@@ -44,12 +39,7 @@ pub fn guarded_scan_workspace(
     id: String,
     coordinator: State<'_, WorkspaceMutationCoordinator>,
 ) -> Result<ScanReport, String> {
-    let _lease = acquire_manual(
-        &app,
-        &id,
-        &coordinator,
-        WorkspaceOperationKind::Observe,
-    )?;
+    let _lease = acquire_manual(&app, &id, &coordinator, WorkspaceOperationKind::Observe)?;
     commands::scan_workspace(app, id)
 }
 
@@ -59,12 +49,7 @@ pub fn guarded_initialize_ignore_file(
     id: String,
     coordinator: State<'_, WorkspaceMutationCoordinator>,
 ) -> Result<bool, String> {
-    let _lease = acquire_manual(
-        &app,
-        &id,
-        &coordinator,
-        WorkspaceOperationKind::Configure,
-    )?;
+    let _lease = acquire_manual(&app, &id, &coordinator, WorkspaceOperationKind::Configure)?;
     commands::initialize_ignore_file(app, id)
 }
 
@@ -105,12 +90,7 @@ pub fn guarded_bind_workspace_remote(
     remote_path: String,
     coordinator: State<'_, WorkspaceMutationCoordinator>,
 ) -> Result<WorkspaceRemoteBinding, String> {
-    let _lease = acquire_manual(
-        &app,
-        &id,
-        &coordinator,
-        WorkspaceOperationKind::Configure,
-    )?;
+    let _lease = acquire_manual(&app, &id, &coordinator, WorkspaceOperationKind::Configure)?;
     commands::bind_workspace_remote(app, id, provider_id, remote_path)
 }
 
@@ -121,12 +101,7 @@ pub async fn guarded_scan_remote_inventory(
     sessions: State<'_, ProviderSessionStore>,
     coordinator: State<'_, WorkspaceMutationCoordinator>,
 ) -> Result<RemoteInventoryReport, String> {
-    let _lease = acquire_manual(
-        &app,
-        &id,
-        &coordinator,
-        WorkspaceOperationKind::Observe,
-    )?;
+    let _lease = acquire_manual(&app, &id, &coordinator, WorkspaceOperationKind::Observe)?;
     commands::scan_remote_inventory(app, id, sessions).await
 }
 
@@ -137,12 +112,7 @@ pub fn guarded_set_workspace_sync_mode(
     mode: SyncMode,
     coordinator: State<'_, WorkspaceMutationCoordinator>,
 ) -> Result<Workspace, String> {
-    let _lease = acquire_manual(
-        &app,
-        &id,
-        &coordinator,
-        WorkspaceOperationKind::Configure,
-    )?;
+    let _lease = acquire_manual(&app, &id, &coordinator, WorkspaceOperationKind::Configure)?;
     sync::set_workspace_sync_mode(app, id, mode)
 }
 
@@ -153,12 +123,7 @@ pub async fn guarded_enable_workspace_encryption(
     sessions: State<'_, ProviderSessionStore>,
     coordinator: State<'_, WorkspaceMutationCoordinator>,
 ) -> Result<EncryptionEnableResult, String> {
-    let _lease = acquire_manual(
-        &app,
-        &id,
-        &coordinator,
-        WorkspaceOperationKind::Configure,
-    )?;
+    let _lease = acquire_manual(&app, &id, &coordinator, WorkspaceOperationKind::Configure)?;
     encryption::enable_workspace_encryption(app, id, sessions).await
 }
 
@@ -170,12 +135,7 @@ pub async fn guarded_import_workspace_recovery_key(
     sessions: State<'_, ProviderSessionStore>,
     coordinator: State<'_, WorkspaceMutationCoordinator>,
 ) -> Result<WorkspaceEncryptionStatus, String> {
-    let _lease = acquire_manual(
-        &app,
-        &id,
-        &coordinator,
-        WorkspaceOperationKind::Configure,
-    )?;
+    let _lease = acquire_manual(&app, &id, &coordinator, WorkspaceOperationKind::Configure)?;
     encryption::import_workspace_recovery_key(app, id, recovery_key, sessions).await
 }
 
