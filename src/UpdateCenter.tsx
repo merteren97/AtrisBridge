@@ -68,9 +68,9 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [dismissedVersion, setDismissedVersion] = useState<string | null>(null);
   const [deferredAutomatic, setDeferredAutomatic] = useState(false);
-  const initialized = useRef(false);
   const installing = useRef(false);
   const behaviorRef = useRef(behavior);
+  const checkRef = useRef<(manual?: boolean) => Promise<UpdateMetadata | null>>(async () => null);
 
   useEffect(() => {
     behaviorRef.current = behavior;
@@ -160,20 +160,30 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   }, [runtime, status, update]);
 
   useEffect(() => {
-    if (initialized.current) return;
-    initialized.current = true;
+    checkRef.current = checkForUpdates;
+  }, [checkForUpdates]);
+
+  useEffect(() => {
     let cancelled = false;
+    let timer: number | null = null;
     void invoke<UpdateRuntimeInfo>("get_update_runtime_info")
       .then((info) => {
         if (cancelled) return;
         setRuntime(info);
-        if (info.configured) window.setTimeout(() => void checkForUpdates(false), 2200);
+        if (info.configured) {
+          timer = window.setTimeout(() => {
+            if (!cancelled) void checkRef.current(false);
+          }, 2200);
+        }
       })
       .catch((reason) => {
         if (!cancelled) setError(errorMessage(reason));
       });
-    return () => { cancelled = true; };
-  }, [checkForUpdates]);
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, []);
 
   useEffect(() => {
     if (!deferredAutomatic || behavior !== "automatic" || !update || status !== "available") return undefined;
