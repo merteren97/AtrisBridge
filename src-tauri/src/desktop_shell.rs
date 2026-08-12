@@ -63,6 +63,8 @@ pub fn handle_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) 
         if CLOSE_TO_TRAY.load(Ordering::SeqCst) {
             api.prevent_close();
             let _ = window.hide();
+        } else {
+            window.app_handle().exit(0);
         }
     }
 }
