@@ -78,8 +78,7 @@ pub async fn guarded_connect_google_drive(
     .await
     .map_err(|error| format!("Google verification worker failed: {error}"))??;
 
-    let mut provider =
-        provider_storage::upsert_google_drive_connection(&app, Some(account_label))?;
+    let mut provider = provider_storage::upsert_google_drive_connection(&app, Some(account_label))?;
     sessions.set_google_drive_token(&provider.id, token)?;
     provider.session_active = true;
     provider.credential_persisted = true;
