@@ -1,3 +1,4 @@
+mod ai_gateway;
 mod app_updater;
 mod atris_auth;
 mod backup;
@@ -41,6 +42,7 @@ pub fn run() {
                 .map_err(std::io::Error::other)?;
             restore::recover_interrupted_restores(app.handle()).map_err(std::io::Error::other)?;
             sync::recover_interrupted_syncs(app.handle()).map_err(std::io::Error::other)?;
+            ai_gateway::initialize(app.handle()).map_err(std::io::Error::other)?;
             continuous::initialize(app.handle()).map_err(std::io::Error::other)?;
             Ok(())
         })
@@ -53,6 +55,14 @@ pub fn run() {
             atris_auth::login_atrishub,
             atris_auth::restore_atrishub_session,
             atris_auth::logout_atrishub,
+            ai_gateway::ai_gateway_overview,
+            ai_gateway::list_ai_permissions,
+            ai_gateway::set_ai_permission,
+            ai_gateway::reset_ai_permission,
+            ai_gateway::open_ai_session,
+            ai_gateway::close_ai_session,
+            ai_gateway::list_ai_sessions,
+            ai_gateway::list_ai_audit,
             commands::list_workspaces,
             commands::add_workspace,
             continuous_commands::guarded_remove_workspace,
