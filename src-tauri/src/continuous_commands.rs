@@ -13,9 +13,12 @@ use crate::{
     },
     provider_sessions::ProviderSessionStore,
     restore::{self, RestoreExecutionReport, RestorePlan},
-    storage::delete_workspace,
+    services::workspace as workspace_service,
     sync::{self, SyncExecutionReport, SyncPlan},
     sync_recovery::{self, SyncRecoveryEntry},
+    workspace_coordinator::{
+        WorkspaceMutationCoordinator, WorkspaceMutationLease, WorkspaceOperationKind,
+    },
 };
 
 #[tauri::command]
@@ -23,21 +26,30 @@ pub fn guarded_remove_workspace(
     app: AppHandle,
     id: String,
     manager: State<'_, ContinuousSyncManager>,
+    coordinator: State<'_, WorkspaceMutationCoordinator>,
 ) -> Result<(), String> {
-    ensure_manual_control_allowed(&app, &id)?;
+    let _lease = acquire_manual(&app, &id, &coordinator, WorkspaceOperationKind::Configure)?;
     manager.stop_workspace(&id)?;
-    delete_workspace(&app, &id)
+    workspace_service::remove(&app, &id)
 }
 
 #[tauri::command]
-pub fn guarded_scan_workspace(app: AppHandle, id: String) -> Result<ScanReport, String> {
-    ensure_manual_control_allowed(&app, &id)?;
+pub fn guarded_scan_workspace(
+    app: AppHandle,
+    id: String,
+    coordinator: State<'_, WorkspaceMutationCoordinator>,
+) -> Result<ScanReport, String> {
+    let _lease = acquire_manual(&app, &id, &coordinator, WorkspaceOperationKind::Observe)?;
     commands::scan_workspace(app, id)
 }
 
 #[tauri::command]
-pub fn guarded_initialize_ignore_file(app: AppHandle, id: String) -> Result<bool, String> {
-    ensure_manual_control_allowed(&app, &id)?;
+pub fn guarded_initialize_ignore_file(
+    app: AppHandle,
+    id: String,
+    coordinator: State<'_, WorkspaceMutationCoordinator>,
+) -> Result<bool, String> {
+    let _lease = acquire_manual(&app, &id, &coordinator, WorkspaceOperationKind::Configure)?;
     commands::initialize_ignore_file(app, id)
 }
 
@@ -76,8 +88,9 @@ pub fn guarded_bind_workspace_remote(
     id: String,
     provider_id: String,
     remote_path: String,
+    coordinator: State<'_, WorkspaceMutationCoordinator>,
 ) -> Result<WorkspaceRemoteBinding, String> {
-    ensure_manual_control_allowed(&app, &id)?;
+    let _lease = acquire_manual(&app, &id, &coordinator, WorkspaceOperationKind::Configure)?;
     commands::bind_workspace_remote(app, id, provider_id, remote_path)
 }
 
@@ -86,8 +99,9 @@ pub async fn guarded_scan_remote_inventory(
     app: AppHandle,
     id: String,
     sessions: State<'_, ProviderSessionStore>,
+    coordinator: State<'_, WorkspaceMutationCoordinator>,
 ) -> Result<RemoteInventoryReport, String> {
-    ensure_manual_control_allowed(&app, &id)?;
+    let _lease = acquire_manual(&app, &id, &coordinator, WorkspaceOperationKind::Observe)?;
     commands::scan_remote_inventory(app, id, sessions).await
 }
 
@@ -96,8 +110,9 @@ pub fn guarded_set_workspace_sync_mode(
     app: AppHandle,
     id: String,
     mode: SyncMode,
+    coordinator: State<'_, WorkspaceMutationCoordinator>,
 ) -> Result<Workspace, String> {
-    ensure_manual_control_allowed(&app, &id)?;
+    let _lease = acquire_manual(&app, &id, &coordinator, WorkspaceOperationKind::Configure)?;
     sync::set_workspace_sync_mode(app, id, mode)
 }
 
@@ -106,8 +121,9 @@ pub async fn guarded_enable_workspace_encryption(
     app: AppHandle,
     id: String,
     sessions: State<'_, ProviderSessionStore>,
+    coordinator: State<'_, WorkspaceMutationCoordinator>,
 ) -> Result<EncryptionEnableResult, String> {
-    ensure_manual_control_allowed(&app, &id)?;
+    let _lease = acquire_manual(&app, &id, &coordinator, WorkspaceOperationKind::Configure)?;
     encryption::enable_workspace_encryption(app, id, sessions).await
 }
 
@@ -117,8 +133,9 @@ pub async fn guarded_import_workspace_recovery_key(
     id: String,
     recovery_key: String,
     sessions: State<'_, ProviderSessionStore>,
+    coordinator: State<'_, WorkspaceMutationCoordinator>,
 ) -> Result<WorkspaceEncryptionStatus, String> {
-    ensure_manual_control_allowed(&app, &id)?;
+    let _lease = acquire_manual(&app, &id, &coordinator, WorkspaceOperationKind::Configure)?;
     encryption::import_workspace_recovery_key(app, id, recovery_key, sessions).await
 }
 
@@ -127,8 +144,9 @@ pub async fn guarded_prepare_backup_plan(
     app: AppHandle,
     id: String,
     sessions: State<'_, ProviderSessionStore>,
+    coordinator: State<'_, WorkspaceMutationCoordinator>,
 ) -> Result<BackupPlan, String> {
-    ensure_manual_control_allowed(&app, &id)?;
+    let _lease = acquire_manual(&app, &id, &coordinator, WorkspaceOperationKind::Plan)?;
     commands::prepare_backup_plan(app, id, sessions).await
 }
 
@@ -137,9 +155,15 @@ pub async fn guarded_execute_backup_plan(
     app: AppHandle,
     plan_id: String,
     sessions: State<'_, ProviderSessionStore>,
+    coordinator: State<'_, WorkspaceMutationCoordinator>,
 ) -> Result<BackupExecutionReport, String> {
     let workspace_id = workspace_for_plan(&app, "backup_plans", &plan_id)?;
-    ensure_manual_control_allowed(&app, &workspace_id)?;
+    let _lease = acquire_manual(
+        &app,
+        &workspace_id,
+        &coordinator,
+        WorkspaceOperationKind::Execute,
+    )?;
     commands::execute_backup_plan(app, plan_id, sessions).await
 }
 
@@ -148,8 +172,9 @@ pub async fn guarded_prepare_restore_plan(
     app: AppHandle,
     id: String,
     sessions: State<'_, ProviderSessionStore>,
+    coordinator: State<'_, WorkspaceMutationCoordinator>,
 ) -> Result<RestorePlan, String> {
-    ensure_manual_control_allowed(&app, &id)?;
+    let _lease = acquire_manual(&app, &id, &coordinator, WorkspaceOperationKind::Plan)?;
     restore::prepare_restore_plan(app, id, sessions).await
 }
 
@@ -158,9 +183,15 @@ pub async fn guarded_execute_restore_plan(
     app: AppHandle,
     plan_id: String,
     sessions: State<'_, ProviderSessionStore>,
+    coordinator: State<'_, WorkspaceMutationCoordinator>,
 ) -> Result<RestoreExecutionReport, String> {
     let workspace_id = workspace_for_plan(&app, "restore_plans", &plan_id)?;
-    ensure_manual_control_allowed(&app, &workspace_id)?;
+    let _lease = acquire_manual(
+        &app,
+        &workspace_id,
+        &coordinator,
+        WorkspaceOperationKind::Execute,
+    )?;
     restore::execute_restore_plan(app, plan_id, sessions).await
 }
 
@@ -169,8 +200,9 @@ pub async fn guarded_prepare_sync_plan(
     app: AppHandle,
     id: String,
     sessions: State<'_, ProviderSessionStore>,
+    coordinator: State<'_, WorkspaceMutationCoordinator>,
 ) -> Result<SyncPlan, String> {
-    ensure_manual_control_allowed(&app, &id)?;
+    let _lease = acquire_manual(&app, &id, &coordinator, WorkspaceOperationKind::Plan)?;
     sync::prepare_sync_plan(app, id, sessions).await
 }
 
@@ -179,9 +211,15 @@ pub async fn guarded_execute_sync_plan(
     app: AppHandle,
     plan_id: String,
     sessions: State<'_, ProviderSessionStore>,
+    coordinator: State<'_, WorkspaceMutationCoordinator>,
 ) -> Result<SyncExecutionReport, String> {
     let workspace_id = workspace_for_plan(&app, "sync_plans", &plan_id)?;
-    ensure_manual_control_allowed(&app, &workspace_id)?;
+    let _lease = acquire_manual(
+        &app,
+        &workspace_id,
+        &coordinator,
+        WorkspaceOperationKind::Execute,
+    )?;
     sync::execute_sync_plan(app, plan_id, sessions).await
 }
 
@@ -189,10 +227,28 @@ pub async fn guarded_execute_sync_plan(
 pub async fn guarded_restore_sync_recovery(
     app: AppHandle,
     recovery_id: String,
+    coordinator: State<'_, WorkspaceMutationCoordinator>,
 ) -> Result<SyncRecoveryEntry, String> {
     let workspace_id = workspace_for_recovery(&app, &recovery_id)?;
-    ensure_manual_control_allowed(&app, &workspace_id)?;
+    let _lease = acquire_manual(
+        &app,
+        &workspace_id,
+        &coordinator,
+        WorkspaceOperationKind::Recovery,
+    )?;
     sync_recovery::restore_sync_recovery(app, recovery_id).await
+}
+
+fn acquire_manual(
+    app: &AppHandle,
+    workspace_id: &str,
+    coordinator: &WorkspaceMutationCoordinator,
+    kind: WorkspaceOperationKind,
+) -> Result<WorkspaceMutationLease, String> {
+    ensure_manual_control_allowed(app, workspace_id)?;
+    coordinator
+        .acquire(workspace_id, "desktop-manual", kind)
+        .map_err(|error| error.to_string())
 }
 
 fn ensure_manual_control_allowed(app: &AppHandle, workspace_id: &str) -> Result<(), String> {

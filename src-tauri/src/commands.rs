@@ -1,11 +1,7 @@
-use std::{
-    fs,
-    path::{Component, Path, PathBuf},
-};
+use std::path::{Component, Path, PathBuf};
 
 use chrono::Utc;
 use tauri::{AppHandle, State};
-use uuid::Uuid;
 
 use crate::{
     backup, encryption,
@@ -16,89 +12,34 @@ use crate::{
     },
     provider_sessions::ProviderSessionStore,
     provider_storage, scanner,
-    storage::{
-        delete_workspace, find_workspace, get_journal_summary, insert_workspace,
-        list_journal_summaries, load_workspaces, record_scan,
-    },
+    services::workspace as workspace_service,
+    storage::{find_workspace, get_journal_summary, list_journal_summaries, record_scan},
     transport::rclone,
 };
 
 #[tauri::command]
 pub fn list_workspaces(app: AppHandle) -> Result<Vec<Workspace>, String> {
-    load_workspaces(&app)
+    workspace_service::list(&app)
 }
 
 #[tauri::command]
 pub fn add_workspace(app: AppHandle, name: String, path: String) -> Result<Workspace, String> {
-    let requested = PathBuf::from(path.trim());
-    if !requested.is_dir() {
-        return Err("Choose an existing directory.".into());
-    }
-
-    let canonical = requested
-        .canonicalize()
-        .map_err(|error| format!("Could not access the selected directory: {error}"))?;
-    let workspaces = load_workspaces(&app)?;
-
-    for existing in &workspaces {
-        if PathBuf::from(&existing.local_path)
-            .canonicalize()
-            .map(|value| value == canonical)
-            .unwrap_or(false)
-        {
-            return Err("This directory is already an AtrisBridge workspace.".into());
-        }
-    }
-
-    let trimmed_name = name.trim();
-    let fallback_name = canonical
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("Workspace");
-
-    let workspace = Workspace {
-        id: Uuid::new_v4().to_string(),
-        name: if trimmed_name.is_empty() {
-            fallback_name
-        } else {
-            trimmed_name
-        }
-        .to_owned(),
-        local_path: requested.to_string_lossy().to_string(),
-        sync_mode: SyncMode::Backup,
-        created_at: Utc::now().to_rfc3339(),
-        last_scan_at: None,
-    };
-
-    insert_workspace(&app, &workspace)?;
-    Ok(workspace)
+    workspace_service::add(&app, name, path)
 }
 
 #[tauri::command]
 pub fn remove_workspace(app: AppHandle, id: String) -> Result<(), String> {
-    delete_workspace(&app, &id)
+    workspace_service::remove(&app, &id)
 }
 
 #[tauri::command]
 pub fn scan_workspace(app: AppHandle, id: String) -> Result<ScanReport, String> {
-    let workspace = find_workspace(&app, &id)?;
-    let root = PathBuf::from(&workspace.local_path);
-    let outcome = scanner::scan(&id, &root)?;
-    record_scan(&app, &outcome.report, &outcome.inventory)?;
-    Ok(outcome.report)
+    workspace_service::scan(&app, &id)
 }
 
 #[tauri::command]
 pub fn initialize_ignore_file(app: AppHandle, id: String) -> Result<bool, String> {
-    let workspace = find_workspace(&app, &id)?;
-    let path = PathBuf::from(&workspace.local_path).join(".atrisbridgeignore");
-    if path.exists() {
-        return Ok(false);
-    }
-
-    fs::write(&path, scanner::default_ignore_file())
-        .map_err(|error| format!("Could not create .atrisbridgeignore: {error}"))?;
-    Ok(true)
+    workspace_service::initialize_ignore_file(&app, &id)
 }
 
 #[tauri::command]

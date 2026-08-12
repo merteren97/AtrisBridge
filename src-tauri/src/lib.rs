@@ -14,20 +14,24 @@ mod provider_storage;
 mod restore;
 mod scanner;
 mod secure_store;
+mod services;
 mod storage;
 mod sync;
 mod sync_recovery;
 mod transport;
+mod workspace_coordinator;
 
 use atris_auth::AtrisHubAuthState;
 use continuous::ContinuousSyncManager;
 use provider_sessions::ProviderSessionStore;
+use workspace_coordinator::WorkspaceMutationCoordinator;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(ProviderSessionStore::default())
         .manage(ContinuousSyncManager::default())
+        .manage(WorkspaceMutationCoordinator::default())
         .manage(AtrisHubAuthState::default())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -56,6 +60,7 @@ pub fn run() {
             continuous_commands::guarded_initialize_ignore_file,
             commands::journal_summary,
             commands::journal_summaries,
+            workspace_coordinator::workspace_operation_status,
             commands::rclone_runtime_status,
             commands::provider_connections,
             continuous_commands::guarded_connect_google_drive,
