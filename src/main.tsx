@@ -9,6 +9,7 @@ import "./product/overview.css";
 import "./product/workspace-settings.css";
 import "./product/legacy-responsive.css";
 import "./product/runtime-polish.css";
+import "./product/readability-overrides.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
