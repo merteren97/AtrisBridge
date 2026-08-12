@@ -1,0 +1,27 @@
+/* Final readability floor for compact desktop surfaces. */
+.ab-live-state { font-size: 10px; }
+.ab-activity-durable { font-size: 11px !important; }
+.ab-account-menu-meta span { font-size: 10px; }
+.ab-choice-copy strong { font-size: 13px; }
+.ab-choice-copy small { font-size: 11px; line-height: 1.55; }
+.ab-choice-active { font-size: 10px; }
+
+.ab-encryption-heading h3 { font-size: 13px; }
+.ab-encryption-heading p { font-size: 10.5px; line-height: 1.5; }
+.ab-encryption-badge { font-size: 10px; }
+.ab-encryption-status-list span { font-size: 10px; }
+.ab-encryption-status-list strong { font-size: 11px; }
+.ab-encryption-callout { font-size: 10.5px; line-height: 1.55; }
+.ab-encryption-key-field > span { font-size: 10px; }
+.ab-encryption-key-field input { font-size: 11px; }
+.ab-encryption-divider { font-size: 9px; }
+.ab-encryption-revealed-key strong { font-size: 11px; }
+.ab-encryption-revealed-key span, .ab-encryption-key-value code { font-size: 10px; }
+
+.account-modal-heading > span { font-size: 10px; }
+.account-modal-heading p { font-size: 12px; line-height: 1.6; }
+.account-modal form > label:not(.account-remember) { font-size: 11px; }
+.account-remember strong { font-size: 11px; }
+.account-remember small, .account-local-note { font-size: 10px; }
+.account-error, .account-offline-button { font-size: 11px; }
+.account-login-button { font-size: 12px; }
