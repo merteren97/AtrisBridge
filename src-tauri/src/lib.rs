@@ -16,7 +16,9 @@ mod database;
 mod desktop_shell;
 mod encryption;
 mod google_drive_identity;
+mod local_mcp_ipc;
 mod mcp_core;
+mod mcp_dispatch;
 mod models;
 mod provider_sessions;
 mod provider_storage;
@@ -58,6 +60,12 @@ pub fn run() {
             ai_task::initialize(app.handle()).map_err(std::io::Error::other)?;
             ai_changeset::initialize(app.handle()).map_err(std::io::Error::other)?;
             continuous::initialize(app.handle()).map_err(std::io::Error::other)?;
+            // Publish local MCP only after every authority/recovery service is ready. MCP
+            // remains fail-closed when the loopback/vault transport cannot be established,
+            // but an MCP-specific transport failure must not take down normal desktop sync.
+            if let Err(error) = local_mcp_ipc::setup(app.handle()) {
+                eprintln!("AtrisBridge local MCP authority is unavailable: {error}");
+            }
             Ok(())
         })
         .on_window_event(desktop_shell::handle_window_event)

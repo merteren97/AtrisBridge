@@ -15,6 +15,30 @@ function updateJson(relativePath, mutate) {
   fs.writeFileSync(target, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
+function updateCargoPackage(relativePath, packageName) {
+  const target = path.join(root, relativePath);
+  const cargo = fs.readFileSync(target, "utf8");
+  const updated = cargo.replace(
+    /(\[package\][\s\S]*?\nname\s*=\s*"[^"]+"[\s\S]*?\nversion\s*=\s*")[^"]+("\s*\n)/,
+    `$1${version}$2`,
+  );
+  if (updated === cargo) throw new Error(`Could not update the ${packageName} Cargo package version.`);
+  fs.writeFileSync(target, updated, "utf8");
+}
+
+function updateCargoLockPackage(relativePath, packageName) {
+  const target = path.join(root, relativePath);
+  if (!fs.existsSync(target)) return;
+  const cargoLock = fs.readFileSync(target, "utf8").replace(/\r\n?/g, "\n");
+  const escapedName = packageName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const updated = cargoLock.replace(
+    new RegExp(`(\\[\\[package\\]\\]\\nname = "${escapedName}"\\nversion = ")[^"]+("` + ")"),
+    `$1${version}$2`,
+  );
+  if (updated === cargoLock) throw new Error(`Could not update the ${packageName} Cargo.lock package version.`);
+  fs.writeFileSync(target, updated, "utf8");
+}
+
 updateJson("package.json", (value) => { value.version = version; });
 updateJson("src-tauri/tauri.conf.json", (value) => { value.version = version; });
 
@@ -26,21 +50,9 @@ if (fs.existsSync(packageLockPath)) {
   });
 }
 
-const cargoPath = path.join(root, "src-tauri", "Cargo.toml");
-const cargo = fs.readFileSync(cargoPath, "utf8");
-const updatedCargo = cargo.replace(/(\[package\][\s\S]*?\nversion\s*=\s*")[^"]+("\s*\n)/, `$1${version}$2`);
-if (updatedCargo === cargo) throw new Error("Could not update the AtrisBridge Cargo package version.");
-fs.writeFileSync(cargoPath, updatedCargo, "utf8");
+updateCargoPackage("src-tauri/Cargo.toml", "atrisbridge");
+updateCargoLockPackage("src-tauri/Cargo.lock", "atrisbridge");
+updateCargoPackage("src-tauri/mcp-companion/Cargo.toml", "atrisbridge-mcp");
+updateCargoLockPackage("src-tauri/mcp-companion/Cargo.lock", "atrisbridge-mcp");
 
-const cargoLockPath = path.join(root, "src-tauri", "Cargo.lock");
-if (fs.existsSync(cargoLockPath)) {
-  const cargoLock = fs.readFileSync(cargoLockPath, "utf8").replace(/\r\n?/g, "\n");
-  const updatedLock = cargoLock.replace(
-    /(\[\[package\]\]\nname = "atrisbridge"\nversion = ")[^"]+(")/,
-    `$1${version}$2`,
-  );
-  if (updatedLock === cargoLock) throw new Error("Could not update the AtrisBridge Cargo.lock package version.");
-  fs.writeFileSync(cargoLockPath, updatedLock, "utf8");
-}
-
-console.log(`Applied AtrisBridge release version ${version}.`);
+console.log(`Applied AtrisBridge release version ${version} to desktop and MCP companion.`);

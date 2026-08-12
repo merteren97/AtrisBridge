@@ -9,9 +9,11 @@ pnpm-debug.log*
 
 # Tauri / Rust
 src-tauri/target/
+src-tauri/mcp-companion/target/
 **/*.rs.bk
 src-tauri/binaries/rclone
 src-tauri/binaries/rclone.exe
+src-tauri/binaries/atrisbridge-mcp-*
 src-tauri/rclone/rclone
 src-tauri/rclone/rclone.exe
 src-tauri/tauri.package.conf.json

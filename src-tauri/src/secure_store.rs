@@ -5,6 +5,8 @@ const OAUTH_PREFIX: &str = "oauth.google_drive";
 const CRYPT_PREFIX: &str = "crypt.workspace";
 const ATRIS_REFRESH_ACCOUNT: &str = "auth.atrishub.refresh";
 const AI_ARTIFACT_KEY_ACCOUNT: &str = "crypt.ai_artifacts.v1";
+const LOCAL_MCP_ENDPOINT_ACCOUNT: &str = "mcp.local.endpoint.v1";
+const MAX_LOCAL_MCP_ENDPOINT_BYTES: usize = 8 * 1024;
 
 fn entry(account: &str) -> Result<Entry, String> {
     Entry::new(SERVICE_NAME, account)
@@ -63,6 +65,26 @@ pub fn store_ai_artifact_key(encoded_key: &str) -> Result<(), String> {
 
 pub fn load_ai_artifact_key() -> Result<Option<String>, String> {
     load_password(AI_ARTIFACT_KEY_ACCOUNT, "AI artifact encryption key")
+}
+
+pub fn store_local_mcp_endpoint(encoded_endpoint: &str) -> Result<(), String> {
+    let endpoint = encoded_endpoint.trim();
+    if endpoint.is_empty() || endpoint.len() > MAX_LOCAL_MCP_ENDPOINT_BYTES {
+        return Err("Invalid local MCP endpoint credential.".into());
+    }
+    entry(LOCAL_MCP_ENDPOINT_ACCOUNT)?
+        .set_password(endpoint)
+        .map_err(|error| {
+            format!("Could not save local MCP endpoint credential in the OS vault: {error}")
+        })
+}
+
+pub fn load_local_mcp_endpoint() -> Result<Option<String>, String> {
+    load_password(LOCAL_MCP_ENDPOINT_ACCOUNT, "local MCP endpoint credential")
+}
+
+pub fn delete_local_mcp_endpoint() -> Result<(), String> {
+    delete_password(LOCAL_MCP_ENDPOINT_ACCOUNT, "local MCP endpoint credential")
 }
 
 pub fn workspace_key_reference(
@@ -139,5 +161,11 @@ mod tests {
             workspace_key_reference("a@example.com", "AtrisBridge/A").expect("a"),
             workspace_key_reference("b@example.com", "AtrisBridge/A").expect("b")
         );
+    }
+
+    #[test]
+    fn local_mcp_endpoint_bounds_reject_empty_or_oversized_values_before_keyring_access() {
+        assert!(store_local_mcp_endpoint("").is_err());
+        assert!(store_local_mcp_endpoint(&"x".repeat(MAX_LOCAL_MCP_ENDPOINT_BYTES + 1)).is_err());
     }
 }

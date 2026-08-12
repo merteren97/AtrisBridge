@@ -1,0 +1,16 @@
+[package]
+name = "atrisbridge-mcp"
+version = "0.1.0-alpha.9"
+description = "Bundled MCP stdio companion for the AtrisBridge desktop authority."
+authors = ["AtrisHub"]
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+keyring = "4.1.6"
+rmcp = { version = "=3.0.1", features = ["transport-io"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+uuid = { version = "1", features = ["v4"] }

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,11 +8,71 @@ import { createPackageBuildConfig } from "./create-package-build-config.mjs";
 import { channelForTag, createUpdaterBuildConfig, updaterEndpoint, writeUpdaterBuildConfig } from "./create-updater-build-config.mjs";
 import { generateUpdaterManifest } from "./generate-updater-manifest.mjs";
 
-test("package config bundles the verified rclone resource", () => {
+const repositoryRoot = path.resolve(import.meta.dirname, "..", "..");
+
+test("package config bundles verified runtime resources and the MCP companion", () => {
   const config = createPackageBuildConfig();
   assert.equal(config.bundle.active, true);
   assert.deepEqual(config.bundle.resources, ["rclone/**/*"]);
+  assert.deepEqual(config.bundle.externalBin, ["binaries/atrisbridge-mcp"]);
   assert.ok(config.bundle.icon.some((entry) => entry.endsWith("icon.ico")));
+});
+
+test("MCP companion version tracks the desktop package and pins the reviewed SDK", () => {
+  const packageJson = JSON.parse(fs.readFileSync(path.join(repositoryRoot, "package.json"), "utf8"));
+  const companionCargo = fs.readFileSync(path.join(repositoryRoot, "src-tauri", "mcp-companion", "Cargo.toml"), "utf8");
+  assert.match(companionCargo, new RegExp(`version = "${packageJson.version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`));
+  assert.match(companionCargo, /rmcp = \{ version = "=3\.0\.1"/);
+
+  const syntax = spawnSync(process.execPath, ["--check", path.join(repositoryRoot, ".github", "scripts", "apply-release-version.mjs")], { encoding: "utf8" });
+  assert.equal(syntax.status, 0, syntax.stderr || syntax.stdout);
+});
+
+test("release version application updates desktop and MCP companion atomically", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "atrisbridge-release-version-"));
+  try {
+    fs.mkdirSync(path.join(root, "src-tauri", "mcp-companion"), { recursive: true });
+    fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ version: "0.1.0-alpha.9" }));
+    fs.writeFileSync(path.join(root, "package-lock.json"), JSON.stringify({
+      version: "0.1.0-alpha.9",
+      packages: { "": { version: "0.1.0-alpha.9" } },
+    }));
+    fs.writeFileSync(path.join(root, "src-tauri", "tauri.conf.json"), JSON.stringify({ version: "0.1.0-alpha.9" }));
+    fs.writeFileSync(
+      path.join(root, "src-tauri", "Cargo.toml"),
+      '[package]\nname = "atrisbridge"\nversion = "0.1.0-alpha.9"\nedition = "2021"\n',
+    );
+    fs.writeFileSync(
+      path.join(root, "src-tauri", "Cargo.lock"),
+      'version = 4\n\n[[package]]\nname = "atrisbridge"\nversion = "0.1.0-alpha.9"\n',
+    );
+    fs.writeFileSync(
+      path.join(root, "src-tauri", "mcp-companion", "Cargo.toml"),
+      '[package]\nname = "atrisbridge-mcp"\nversion = "0.1.0-alpha.9"\nedition = "2021"\n',
+    );
+    fs.writeFileSync(
+      path.join(root, "src-tauri", "mcp-companion", "Cargo.lock"),
+      'version = 4\n\n[[package]]\nname = "atrisbridge-mcp"\nversion = "0.1.0-alpha.9"\n',
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [path.join(repositoryRoot, ".github", "scripts", "apply-release-version.mjs"), "v1.2.3-rc.4"],
+      { cwd: root, encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+
+    assert.equal(JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version, "1.2.3-rc.4");
+    assert.equal(JSON.parse(fs.readFileSync(path.join(root, "package-lock.json"), "utf8")).version, "1.2.3-rc.4");
+    assert.equal(JSON.parse(fs.readFileSync(path.join(root, "package-lock.json"), "utf8")).packages[""].version, "1.2.3-rc.4");
+    assert.equal(JSON.parse(fs.readFileSync(path.join(root, "src-tauri", "tauri.conf.json"), "utf8")).version, "1.2.3-rc.4");
+    assert.match(fs.readFileSync(path.join(root, "src-tauri", "Cargo.toml"), "utf8"), /version = "1\.2\.3-rc\.4"/);
+    assert.match(fs.readFileSync(path.join(root, "src-tauri", "Cargo.lock"), "utf8"), /name = "atrisbridge"\nversion = "1\.2\.3-rc\.4"/);
+    assert.match(fs.readFileSync(path.join(root, "src-tauri", "mcp-companion", "Cargo.toml"), "utf8"), /version = "1\.2\.3-rc\.4"/);
+    assert.match(fs.readFileSync(path.join(root, "src-tauri", "mcp-companion", "Cargo.lock"), "utf8"), /name = "atrisbridge-mcp"\nversion = "1\.2\.3-rc\.4"/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("release channels are derived from SemVer and use HTTPS AtrisHub endpoints", () => {
