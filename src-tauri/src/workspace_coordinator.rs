@@ -99,7 +99,10 @@ impl WorkspaceMutationCoordinator {
             .map_err(|_| WorkspaceLeaseError::Unavailable)?;
 
         if let Some(existing) = active.get(workspace_id) {
-            return Err(WorkspaceLeaseError::Busy(status_for(workspace_id, existing)));
+            return Err(WorkspaceLeaseError::Busy(status_for(
+                workspace_id,
+                existing,
+            )));
         }
 
         let operation_id = Uuid::new_v4().to_string();
@@ -178,11 +181,8 @@ mod tests {
             .acquire("ws-1", "desktop", WorkspaceOperationKind::Execute)
             .expect("first lease");
 
-        let second = coordinator.acquire(
-            "ws-1",
-            "continuous",
-            WorkspaceOperationKind::Continuous,
-        );
+        let second =
+            coordinator.acquire("ws-1", "continuous", WorkspaceOperationKind::Continuous);
         assert!(matches!(second, Err(WorkspaceLeaseError::Busy(_))));
 
         drop(first);
