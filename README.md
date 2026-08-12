@@ -1,6 +1,9 @@
 <div align="center">
 
-# AtrisBridge
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="public/brand/atrisbridge-logo-dark.svg">
+  <img alt="AtrisBridge" src="public/brand/atrisbridge-logo-light.svg" width="720">
+</picture>
 
 ### Local-first project synchronization for engineering workspaces.
 
