@@ -3,6 +3,7 @@ use std::{
     time::Duration,
 };
 
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use reqwest::{
     blocking::{Client, Response},
     StatusCode,
@@ -18,6 +19,7 @@ const AUTH_BASE_URL: &str = "https://atrishub.com/api/desktop/v1/auth";
 const DEVICE_ID_KEY: &str = "atrishub_desktop_device_id";
 const CACHED_IDENTITY_KEY: &str = "atrishub_cached_identity";
 const REQUEST_TIMEOUT_SECONDS: u64 = 20;
+const RELAY_REFRESH_MARGIN_SECONDS: i64 = 120;
 static AUTH_REFRESH_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Default)]
@@ -28,8 +30,16 @@ pub struct AtrisHubAuthState {
 #[derive(Default)]
 struct AuthRuntime {
     access_token: Option<String>,
+    access_token_expires_at: Option<DateTime<Utc>>,
     volatile_refresh_token: Option<String>,
     snapshot: Option<AuthSnapshot>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DesktopRelayCredential {
+    pub(crate) user_id: String,
+    pub(crate) device_id: String,
+    pub(crate) access_token: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -290,6 +300,12 @@ fn commit_session(
     response: DesktopSessionResponse,
     remember: bool,
 ) -> Result<AuthSnapshot, String> {
+    let access_token_expires_at = DateTime::parse_from_rfc3339(&response.access_token_expires_at)
+        .map(|value| value.with_timezone(&Utc))
+        .map_err(|_| "AtrisHub returned an invalid desktop access-token expiry.".to_string())?;
+    if access_token_expires_at <= Utc::now() {
+        return Err("AtrisHub returned an already expired desktop access token.".into());
+    }
     if remember {
         if let Err(error) = secure_store::store_atrishub_refresh_token(&response.refresh_token) {
             send_logout(&response.refresh_token);
@@ -305,11 +321,88 @@ fn commit_session(
         .lock()
         .map_err(|_| "AtrisHub authentication state is unavailable.".to_string())?;
     runtime.access_token = Some(response.access_token);
+    runtime.access_token_expires_at = Some(access_token_expires_at);
     runtime.volatile_refresh_token = (!remember).then_some(response.refresh_token);
     runtime.snapshot = Some(snapshot.clone());
     Ok(snapshot)
 }
 
+fn current_desktop_relay_credential(
+    app: &AppHandle,
+    state: &AtrisHubAuthState,
+) -> Result<Option<DesktopRelayCredential>, String> {
+    let runtime = state
+        .inner
+        .lock()
+        .map_err(|_| "AtrisHub authentication state is unavailable.".to_string())?;
+    let Some(snapshot) = runtime.snapshot.as_ref() else {
+        return Ok(None);
+    };
+    let Some(user) = snapshot.user.as_ref() else {
+        return Ok(None);
+    };
+    let Some(access_token) = runtime.access_token.as_ref() else {
+        return Ok(None);
+    };
+    let Some(expires_at) = runtime.access_token_expires_at.as_ref() else {
+        return Ok(None);
+    };
+    if *expires_at <= Utc::now() + ChronoDuration::seconds(RELAY_REFRESH_MARGIN_SECONDS) {
+        return Ok(None);
+    }
+    let user_id = user.id.clone();
+    let access_token = access_token.clone();
+    drop(runtime);
+    Ok(Some(DesktopRelayCredential {
+        user_id,
+        device_id: get_or_create_device_id(app)?,
+        access_token,
+    }))
+}
+
+pub(crate) fn desktop_relay_credential(
+    app: &AppHandle,
+    state: &AtrisHubAuthState,
+) -> Result<Option<DesktopRelayCredential>, String> {
+    if let Some(current) = current_desktop_relay_credential(app, state)? {
+        return Ok(Some(current));
+    }
+    let _refresh_operation = AUTH_REFRESH_LOCK
+        .lock()
+        .map_err(|_| "AtrisHub refresh operation lock is unavailable.".to_string())?;
+    if let Some(current) = current_desktop_relay_credential(app, state)? {
+        return Ok(Some(current));
+    }
+    let remembered = secure_store::load_atrishub_refresh_token()?;
+    let volatile = state
+        .inner
+        .lock()
+        .map_err(|_| "AtrisHub authentication state is unavailable.".to_string())?
+        .volatile_refresh_token
+        .clone();
+    let remember = remembered.is_some();
+    let Some(refresh_token) = remembered.as_deref().or(volatile.as_deref()) else {
+        return Ok(None);
+    };
+    match send_refresh(refresh_token) {
+        Ok(response) => {
+            commit_session(app, state, response, remember)?;
+            current_desktop_relay_credential(app, state)
+        }
+        Err(failure) if matches!(failure.kind, FailureKind::Network | FailureKind::Server) => {
+            Err(failure.message)
+        }
+        Err(failure) => {
+            clear_local_identity(app)?;
+            let mut runtime = state
+                .inner
+                .lock()
+                .map_err(|_| "AtrisHub authentication state is unavailable.".to_string())?;
+            *runtime = AuthRuntime::default();
+            Err(failure.message)
+        }
+    }
+}
 fn set_runtime_snapshot(
     state: &AtrisHubAuthState,
     snapshot: AuthSnapshot,

@@ -134,8 +134,10 @@ async fn load_relay_credential(app: AppHandle) -> Result<Option<DesktopRelayCred
 
 async fn connect_relay(
     credential: &DesktopRelayCredential,
-) -> Result<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, String>
-{
+) -> Result<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    String,
+> {
     let mut request = RELAY_URL
         .into_client_request()
         .map_err(|error| format!("Could not build AtrisHub relay request: {error}"))?;
@@ -180,7 +182,7 @@ async fn run_connection(
                         if text.len() > MAX_RELAY_PAYLOAD_BYTES {
                             return Err("AtrisHub relay request exceeded the Desktop safety bound.".into());
                         }
-                        let request: RelayRequest = match serde_json::from_str(text.as_str()) {
+                        let request: RelayRequest = match serde_json::from_str(text.as_ref()) {
                             Ok(value) => value,
                             Err(_) => return Err("AtrisHub relay sent invalid request JSON.".into()),
                         };
@@ -199,6 +201,8 @@ async fn run_connection(
                         let worker_app = app.clone();
                         let worker_credential = credential.clone();
                         let worker_tx = outgoing_tx.clone();
+                        let worker_request_id = request.request_id.clone();
+                        let worker_reply_to = request.reply_to.clone();
                         tauri::async_runtime::spawn(async move {
                             let response = tauri::async_runtime::spawn_blocking(move || {
                                 let _permit = permit;
@@ -206,17 +210,12 @@ async fn run_connection(
                             }).await;
                             let value = match response {
                                 Ok(value) => value,
-                                Err(error) => json!({
-                                    "type": "relay_response",
-                                    "version": 1,
-                                    "requestId": "worker-failed",
-                                    "replyTo": "unknown",
-                                    "ok": false,
-                                    "error": {
-                                        "code": "desktop_worker_failed",
-                                        "message": bounded_error(&format!("Remote MCP worker failed: {error}")),
-                                    }
-                                }),
+                                Err(error) => relay_error_response_parts(
+                                    &worker_request_id,
+                                    &worker_reply_to,
+                                    "desktop_worker_failed",
+                                    &format!("Remote MCP worker failed: {error}"),
+                                ),
                             };
                             let _ = send_json(&worker_tx, value).await;
                         });
@@ -228,7 +227,6 @@ async fn run_connection(
                     Message::Pong(_) => {}
                     Message::Close(_) => return Ok(()),
                     Message::Binary(_) => return Err("AtrisHub relay sent an unexpected binary payload.".into()),
-                    Message::Frame(_) => {}
                 }
             }
             _ = auth_tick.tick() => {
@@ -276,10 +274,13 @@ fn process_relay_request(
     let reply_to = request.reply_to.clone();
     match validate_relay_request(credential, &request) {
         Ok(()) => {
-            let response = dispatch_mcp_message(app, &request.client.principal, &request.mcp.message);
+            let response =
+                dispatch_mcp_message(app, &request.client.principal, &request.mcp.message);
             relay_success_response(&request_id, &reply_to, response)
         }
-        Err(error) => relay_error_response_parts(&request_id, &reply_to, error.code, &error.message),
+        Err(error) => {
+            relay_error_response_parts(&request_id, &reply_to, error.code, &error.message)
+        }
     }
 }
 
@@ -288,54 +289,106 @@ fn validate_relay_request(
     request: &RelayRequest,
 ) -> Result<(), RelayFailure> {
     if request.kind != "relay_request" || request.version != 1 {
-        return Err(relay_failure("invalid_envelope", "Remote relay envelope is not supported."));
+        return Err(relay_failure(
+            "invalid_envelope",
+            "Remote relay envelope is not supported.",
+        ));
     }
     if Uuid::parse_str(&request.request_id).is_err() {
-        return Err(relay_failure("invalid_envelope", "Remote relay request identifier is invalid."));
+        return Err(relay_failure(
+            "invalid_envelope",
+            "Remote relay request identifier is invalid.",
+        ));
     }
     if !safe_instance_id(&request.reply_to) {
-        return Err(relay_failure("invalid_envelope", "Remote relay reply target is invalid."));
+        return Err(relay_failure(
+            "invalid_envelope",
+            "Remote relay reply target is invalid.",
+        ));
     }
     if request.user_id != credential.user_id || request.device_id != credential.device_id {
-        return Err(relay_failure("identity_mismatch", "Remote relay request is not bound to this signed-in AtrisBridge device."));
+        return Err(relay_failure(
+            "identity_mismatch",
+            "Remote relay request is not bound to this signed-in AtrisBridge device.",
+        ));
     }
-    if request.client.id.is_empty() || request.client.id.len() > 512 || request.client.name.len() > 160 {
-        return Err(relay_failure("invalid_client", "Remote MCP client metadata is invalid."));
+    if request.client.id.is_empty()
+        || request.client.id.len() > 512
+        || request.client.name.len() > 160
+    {
+        return Err(relay_failure(
+            "invalid_client",
+            "Remote MCP client metadata is invalid.",
+        ));
     }
     if request.client.principal != remote_principal(&request.client.id) {
-        return Err(relay_failure("invalid_client", "Remote MCP client principal does not match its OAuth client identity."));
+        return Err(relay_failure(
+            "invalid_client",
+            "Remote MCP client principal does not match its OAuth client identity.",
+        ));
     }
     if request.mcp.protocol_version != MCP_PROTOCOL_VERSION {
-        return Err(relay_failure("unsupported_protocol", "Remote MCP protocol version is not supported."));
+        return Err(relay_failure(
+            "unsupported_protocol",
+            "Remote MCP protocol version is not supported.",
+        ));
     }
     validate_mcp_request_metadata(&request.mcp).map_err(|error| {
-        relay_failure("invalid_mcp_request", &format!("{}: {}", error.message, error.detail))
+        relay_failure(
+            "invalid_mcp_request",
+            &format!("{}: {}", error.message, error.detail),
+        )
     })
 }
 
 fn validate_mcp_request_metadata(mcp: &RelayMcpRequest) -> Result<(), RpcFailure> {
-    let message = mcp.message.as_object().ok_or_else(|| rpc_invalid("MCP request must be a JSON object."))?;
+    let message = mcp
+        .message
+        .as_object()
+        .ok_or_else(|| rpc_invalid("MCP request must be a JSON object."))?;
     if message.get("jsonrpc") != Some(&Value::String("2.0".into())) {
         return Err(rpc_invalid("MCP request must use JSON-RPC 2.0."));
     }
-    let id = message.get("id").ok_or_else(|| rpc_invalid("MCP 2026 requests exposed by AtrisBridge must have a request id."))?;
+    let id = message.get("id").ok_or_else(|| {
+        rpc_invalid("MCP 2026 requests exposed by AtrisBridge must have a request id.")
+    })?;
     if id.is_null() || !(id.is_string() || id.is_number()) {
         return Err(rpc_invalid("MCP request id must be a string or number."));
     }
-    let method = message.get("method").and_then(Value::as_str).ok_or_else(|| rpc_invalid("MCP request method is missing."))?;
+    let method = message
+        .get("method")
+        .and_then(Value::as_str)
+        .ok_or_else(|| rpc_invalid("MCP request method is missing."))?;
     if method != mcp.method_header {
-        return Err(rpc_invalid("Mcp-Method does not match the JSON-RPC method."));
+        return Err(rpc_invalid(
+            "Mcp-Method does not match the JSON-RPC method.",
+        ));
     }
-    let params = message.get("params").and_then(Value::as_object).ok_or_else(|| rpc_invalid("MCP request params are required."))?;
-    let meta = params.get("_meta").and_then(Value::as_object).ok_or_else(|| rpc_invalid("MCP request _meta is required."))?;
-    if meta.get("io.modelcontextprotocol/protocolVersion").and_then(Value::as_str) != Some(MCP_PROTOCOL_VERSION) {
+    let params = message
+        .get("params")
+        .and_then(Value::as_object)
+        .ok_or_else(|| rpc_invalid("MCP request params are required."))?;
+    let meta = params
+        .get("_meta")
+        .and_then(Value::as_object)
+        .ok_or_else(|| rpc_invalid("MCP request _meta is required."))?;
+    if meta
+        .get("io.modelcontextprotocol/protocolVersion")
+        .and_then(Value::as_str)
+        != Some(MCP_PROTOCOL_VERSION)
+    {
         return Err(rpc_invalid("MCP request _meta protocolVersion is invalid."));
     }
-    if !meta.get("io.modelcontextprotocol/clientCapabilities").is_some_and(Value::is_object) {
+    if !meta
+        .get("io.modelcontextprotocol/clientCapabilities")
+        .is_some_and(Value::is_object)
+    {
         return Err(rpc_invalid("MCP request clientCapabilities are required."));
     }
     if let Some(client_info) = meta.get("io.modelcontextprotocol/clientInfo") {
-        let client_info = client_info.as_object().ok_or_else(|| rpc_invalid("MCP clientInfo must be an object."))?;
+        let client_info = client_info
+            .as_object()
+            .ok_or_else(|| rpc_invalid("MCP clientInfo must be an object."))?;
         if !client_info.get("name").is_some_and(Value::is_string)
             || !client_info.get("version").is_some_and(Value::is_string)
         {
@@ -343,9 +396,14 @@ fn validate_mcp_request_metadata(mcp: &RelayMcpRequest) -> Result<(), RpcFailure
         }
     }
     if method == "tools/call" {
-        let name = params.get("name").and_then(Value::as_str).ok_or_else(|| rpc_invalid("tools/call requires a tool name."))?;
+        let name = params
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| rpc_invalid("tools/call requires a tool name."))?;
         if mcp.name_header.as_deref() != Some(name) {
-            return Err(rpc_invalid("Mcp-Name does not match the AtrisBridge tool name."));
+            return Err(rpc_invalid(
+                "Mcp-Name does not match the AtrisBridge tool name.",
+            ));
         }
     }
     Ok(())
@@ -374,12 +432,27 @@ fn dispatch_mcp_result(
 ) -> Result<Value, RpcFailure> {
     validate_mcp_request_metadata(&RelayMcpRequest {
         protocol_version: MCP_PROTOCOL_VERSION.into(),
-        method_header: message.get("method").and_then(Value::as_str).unwrap_or_default().into(),
-        name_header: message.get("params").and_then(Value::as_object).and_then(|params| params.get("name")).and_then(Value::as_str).map(str::to_string),
+        method_header: message
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .into(),
+        name_header: message
+            .get("params")
+            .and_then(Value::as_object)
+            .and_then(|params| params.get("name"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
         message: message.clone(),
     })?;
-    let method = message.get("method").and_then(Value::as_str).unwrap_or_default();
-    let params = message.get("params").and_then(Value::as_object).ok_or_else(|| rpc_invalid("MCP params are required."))?;
+    let method = message
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let params = message
+        .get("params")
+        .and_then(Value::as_object)
+        .ok_or_else(|| rpc_invalid("MCP params are required."))?;
     match method {
         "server/discover" => Ok(discover_result()),
         "tools/list" => Ok(tools_list_result()),
@@ -447,7 +520,10 @@ fn dispatch_tool_call(
     principal: &str,
     params: &Map<String, Value>,
 ) -> Result<Value, RpcFailure> {
-    let name = params.get("name").and_then(Value::as_str).ok_or_else(|| rpc_invalid("tools/call requires a tool name."))?;
+    let name = params
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| rpc_invalid("tools/call requires a tool name."))?;
     let contract = mcp_core::manifest()
         .tools
         .into_iter()
@@ -457,13 +533,20 @@ fn dispatch_tool_call(
             message: "Invalid params",
             detail: "Unknown AtrisBridge MCP tool.".into(),
         })?;
-    let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+    let arguments = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
     if !arguments.is_object() {
         return Err(rpc_invalid("tools/call arguments must be an object."));
     }
-    let task_required = contract.execution.is_some_and(|execution| execution.task_support == "required");
+    let task_required = contract
+        .execution
+        .is_some_and(|execution| execution.task_support == "required");
     if task_required && !request_supports_tasks(params) {
-        return Err(rpc_invalid("This AtrisBridge tool requires the io.modelcontextprotocol/tasks client extension."));
+        return Err(rpc_invalid(
+            "This AtrisBridge tool requires the io.modelcontextprotocol/tasks client extension.",
+        ));
     }
 
     match mcp_dispatch::dispatch_tool(app, principal, name, arguments) {
@@ -488,7 +571,11 @@ fn request_supports_tasks(params: &Map<String, Value>) -> bool {
         .and_then(Value::as_object)
         .and_then(|caps| caps.get("extensions"))
         .and_then(Value::as_object)
-        .is_some_and(|extensions| extensions.get(TASKS_EXTENSION).is_some_and(Value::is_object))
+        .is_some_and(|extensions| {
+            extensions
+                .get(TASKS_EXTENSION)
+                .is_some_and(Value::is_object)
+        })
 }
 
 fn call_tool_result(structured: Value, is_error: bool, text: Option<&str>) -> Value {
@@ -518,7 +605,8 @@ fn dispatch_task_get(
     params: &Map<String, Value>,
 ) -> Result<Value, RpcFailure> {
     let task_id = task_id_param(params)?;
-    let snapshot = mcp_dispatch::task_snapshot(app, principal, task_id).map_err(authority_rpc_failure)?;
+    let snapshot =
+        mcp_dispatch::task_snapshot(app, principal, task_id).map_err(authority_rpc_failure)?;
     let mut result = task_base(&snapshot.task);
     result.insert("resultType".into(), Value::String("complete".into()));
     result.insert("_meta".into(), server_meta());
@@ -537,7 +625,10 @@ fn dispatch_task_cancel(
 }
 
 fn task_id_param(params: &Map<String, Value>) -> Result<&str, RpcFailure> {
-    let task_id = params.get("taskId").and_then(Value::as_str).ok_or_else(|| rpc_invalid("Task request requires taskId."))?;
+    let task_id = params
+        .get("taskId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| rpc_invalid("Task request requires taskId."))?;
     if task_id.is_empty() || task_id.len() > 128 {
         return Err(rpc_invalid("Task identifier is invalid."));
     }
@@ -545,7 +636,9 @@ fn task_id_param(params: &Map<String, Value>) -> Result<&str, RpcFailure> {
 }
 
 fn task_record_from_value(value: &Value) -> Result<AiTaskRecord, RpcFailure> {
-    let object = value.as_object().ok_or_else(|| rpc_internal("AtrisBridge returned an invalid task record."))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| rpc_internal("AtrisBridge returned an invalid task record."))?;
     Ok(AiTaskRecord {
         id: string_field(object, "id")?,
         session_id: string_field(object, "sessionId")?,
@@ -557,17 +650,30 @@ fn task_record_from_value(value: &Value) -> Result<AiTaskRecord, RpcFailure> {
         created_at: string_field(object, "createdAt")?,
         started_at: optional_string_field(object, "startedAt")?,
         completed_at: optional_string_field(object, "completedAt")?,
-        cancel_requested: object.get("cancelRequested").and_then(Value::as_bool).unwrap_or(false),
-        result_available: object.get("resultAvailable").and_then(Value::as_bool).unwrap_or(false),
+        cancel_requested: object
+            .get("cancelRequested")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        result_available: object
+            .get("resultAvailable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         error_code: optional_string_field(object, "errorCode")?,
     })
 }
 
 fn string_field(object: &Map<String, Value>, name: &str) -> Result<String, RpcFailure> {
-    object.get(name).and_then(Value::as_str).map(str::to_string).ok_or_else(|| rpc_internal("AtrisBridge task record is malformed."))
+    object
+        .get(name)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| rpc_internal("AtrisBridge task record is malformed."))
 }
 
-fn optional_string_field(object: &Map<String, Value>, name: &str) -> Result<Option<String>, RpcFailure> {
+fn optional_string_field(
+    object: &Map<String, Value>,
+    name: &str,
+) -> Result<Option<String>, RpcFailure> {
     match object.get(name) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(value)) => Ok(Some(value.clone())),
@@ -578,7 +684,10 @@ fn optional_string_field(object: &Map<String, Value>, name: &str) -> Result<Opti
 fn task_base(task: &AiTaskRecord) -> Map<String, Value> {
     let mut value = Map::new();
     value.insert("taskId".into(), Value::String(task.id.clone()));
-    value.insert("status".into(), Value::String(protocol_task_status(&task.status).into()));
+    value.insert(
+        "status".into(),
+        Value::String(protocol_task_status(&task.status).into()),
+    );
     value.insert("createdAt".into(), Value::String(task.created_at.clone()));
     value.insert("lastUpdatedAt".into(), Value::String(task_updated_at(task)));
     value.insert("ttlMs".into(), json!(TASK_RESULT_TTL_MS));
@@ -597,22 +706,39 @@ fn apply_task_payload(
     match task.status.as_str() {
         "completed" => {
             if let Some(command) = task_result.and_then(|value| value.command.clone()) {
-                let success = command.get("success").and_then(Value::as_bool).unwrap_or(false);
+                let success = command
+                    .get("success")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 result.insert("result".into(), call_tool_result(command, !success, None));
             } else {
                 result.insert("status".into(), Value::String("failed".into()));
-                result.insert("error".into(), task_error(
-                    "result_unavailable",
-                    task_result.and_then(|value| value.error.as_deref()).unwrap_or("AtrisBridge task result is no longer available."),
-                ));
+                result.insert(
+                    "error".into(),
+                    task_error(
+                        "result_unavailable",
+                        task_result
+                            .and_then(|value| value.error.as_deref())
+                            .unwrap_or("AtrisBridge task result is no longer available."),
+                    ),
+                );
             }
         }
         "failed" | "interrupted" => {
             let message = task_result
                 .and_then(|value| value.error.as_deref())
-                .or_else(|| (task.status == "interrupted").then_some("AtrisBridge Desktop restarted while this task was running."))
+                .or_else(|| {
+                    (task.status == "interrupted")
+                        .then_some("AtrisBridge Desktop restarted while this task was running.")
+                })
                 .unwrap_or("AtrisBridge command task failed.");
-            result.insert("error".into(), task_error(task.error_code.as_deref().unwrap_or("command_failed"), message));
+            result.insert(
+                "error".into(),
+                task_error(
+                    task.error_code.as_deref().unwrap_or("command_failed"),
+                    message,
+                ),
+            );
         }
         _ => {}
     }
@@ -647,7 +773,9 @@ fn task_status_message(task: &AiTaskRecord) -> Option<String> {
         "queued" => Some("Waiting for AtrisBridge workspace authority.".into()),
         "running" => Some("AtrisBridge command profile is running.".into()),
         "interrupted" => Some("AtrisBridge Desktop restarted before completion.".into()),
-        "completed" if !task.result_available => Some("Task completed, but its retained result is no longer available.".into()),
+        "completed" if !task.result_available => {
+            Some("Task completed, but its retained result is no longer available.".into())
+        }
         _ => None,
     }
 }
@@ -688,7 +816,12 @@ fn relay_error_response(request: &RelayRequest, code: &'static str, message: &st
     relay_error_response_parts(&request.request_id, &request.reply_to, code, message)
 }
 
-fn relay_error_response_parts(request_id: &str, reply_to: &str, code: &'static str, message: &str) -> Value {
+fn relay_error_response_parts(
+    request_id: &str,
+    reply_to: &str,
+    code: &'static str,
+    message: &str,
+) -> Value {
     json!({
         "type": "relay_response",
         "version": 1,
@@ -700,31 +833,55 @@ fn relay_error_response_parts(request_id: &str, reply_to: &str, code: &'static s
 }
 
 fn relay_failure(code: &'static str, message: &str) -> RelayFailure {
-    RelayFailure { code, message: bounded_error(message) }
+    RelayFailure {
+        code,
+        message: bounded_error(message),
+    }
 }
 
 fn rpc_invalid(detail: &str) -> RpcFailure {
-    RpcFailure { code: -32602, message: "Invalid params", detail: detail.into() }
+    RpcFailure {
+        code: -32602,
+        message: "Invalid params",
+        detail: detail.into(),
+    }
 }
 
 fn rpc_internal(detail: &str) -> RpcFailure {
-    RpcFailure { code: -32603, message: "Internal error", detail: detail.into() }
+    RpcFailure {
+        code: -32603,
+        message: "Internal error",
+        detail: detail.into(),
+    }
 }
 
 fn authority_rpc_failure(error: String) -> RpcFailure {
-    RpcFailure { code: -32602, message: "Invalid params", detail: bounded_error(&error) }
+    RpcFailure {
+        code: -32602,
+        message: "Invalid params",
+        detail: bounded_error(&error),
+    }
 }
 
 fn safe_instance_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 160
-        && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
 }
 
 fn bounded_error(message: &str) -> String {
     let mut chars = message.chars();
-    let bounded = chars.by_ref().take(MAX_SAFE_ERROR_CHARS).collect::<String>();
-    if chars.next().is_some() { format!("{bounded}…") } else { bounded }
+    let bounded = chars
+        .by_ref()
+        .take(MAX_SAFE_ERROR_CHARS)
+        .collect::<String>();
+    if chars.next().is_some() {
+        format!("{bounded}…")
+    } else {
+        bounded
+    }
 }
 
 fn backoff_delay(seconds: u64) -> Duration {
@@ -741,7 +898,7 @@ mod tests {
     fn remote_principal_matches_gateway_sha256_contract() {
         assert_eq!(
             remote_principal("client-123"),
-            "mcp.remote.87daa3985036671953760490bb3d0b1c"
+            "mcp.remote.b44ea687b506d5ca725c434cbe69d0cd"
         );
     }
 

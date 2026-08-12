@@ -352,7 +352,7 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     difference == 0
 }
 
-fn redact_local_paths(app: &AppHandle, message: &str) -> String {
+pub(crate) fn redact_local_paths(app: &AppHandle, message: &str) -> String {
     let mut redacted = message.to_string();
     if let Ok(workspaces) = services::workspace::list(app) {
         for workspace in workspaces {

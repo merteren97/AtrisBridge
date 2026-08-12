@@ -25,6 +25,7 @@ mod mcp_dispatch;
 mod models;
 mod provider_sessions;
 mod provider_storage;
+mod remote_mcp_relay;
 mod restore;
 mod scanner;
 mod secure_store;
@@ -69,6 +70,7 @@ pub fn run() {
             if let Err(error) = local_mcp_ipc::setup(app.handle()) {
                 eprintln!("AtrisBridge local MCP authority is unavailable: {error}");
             }
+            remote_mcp_relay::setup(app.handle());
             Ok(())
         })
         .on_window_event(desktop_shell::handle_window_event)
