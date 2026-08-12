@@ -178,10 +178,12 @@ mod tests {
             .acquire("ws-1", "desktop", WorkspaceOperationKind::Execute)
             .expect("first lease");
 
-        let error = coordinator
-            .acquire("ws-1", "continuous", WorkspaceOperationKind::Continuous)
-            .expect_err("second lease must be rejected");
-        assert!(matches!(error, WorkspaceLeaseError::Busy(_)));
+        let second = coordinator.acquire(
+            "ws-1",
+            "continuous",
+            WorkspaceOperationKind::Continuous,
+        );
+        assert!(matches!(second, Err(WorkspaceLeaseError::Busy(_))));
 
         drop(first);
         coordinator
