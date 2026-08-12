@@ -950,6 +950,12 @@ fn clean_command(executable: &Path) -> Command {
     for key in RCLONE_ENV_KEYS {
         command.env_remove(key);
     }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
     command
 }
 
