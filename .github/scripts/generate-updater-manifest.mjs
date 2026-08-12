@@ -46,10 +46,10 @@ export function generateUpdaterManifest({ directory, repository, tag, publishedA
     (name) => /-setup\.exe$/i.test(name) && !name.endsWith(".sig"),
     "Windows NSIS updater installer",
   );
-  const appImageUpdater = requireSingle(
+  const appImage = requireSingle(
     files,
-    (name) => /\.AppImage\.tar\.gz$/i.test(name) && !name.endsWith(".sig"),
-    "Linux AppImage updater archive",
+    (name) => /\.AppImage$/i.test(name) && !name.endsWith(".sig"),
+    "Linux AppImage updater bundle",
   );
   return {
     version: tag.slice(1),
@@ -57,7 +57,7 @@ export function generateUpdaterManifest({ directory, repository, tag, publishedA
     pub_date: publishedAt,
     platforms: {
       "windows-x86_64": platformEntry(files, repository, tag, nsis),
-      "linux-x86_64": platformEntry(files, repository, tag, appImageUpdater),
+      "linux-x86_64": platformEntry(files, repository, tag, appImage),
     },
   };
 }
