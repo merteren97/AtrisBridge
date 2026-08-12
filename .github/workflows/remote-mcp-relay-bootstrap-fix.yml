@@ -11,12 +11,29 @@ permissions:
 jobs:
   bootstrap:
     if: github.actor != 'github-actions[bot]'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
         with:
           ref: feat/remote-mcp-desktop-relay
           fetch-depth: 0
+      - name: Install Tauri Linux dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            unzip \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsecret-1-dev \
+            libxkbcommon-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.97.0
