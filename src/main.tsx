@@ -1,15 +1,18 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import App from "./App";
 import AtrisAccount from "./AtrisAccount";
 import DesktopActivityCenter from "./DesktopActivityCenter";
+import ProductApp from "./product/ProductApp";
 import UpdateCenter from "./UpdateCenter";
 import "./cloud.css";
-import "./styles.css";
+import "./product/base.css";
+import "./product/overview.css";
+import "./product/workspace-settings.css";
+import "./product/legacy-responsive.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App />
+    <ProductApp />
     <AtrisAccount />
     <DesktopActivityCenter />
     <UpdateCenter />
