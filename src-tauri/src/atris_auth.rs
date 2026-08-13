@@ -726,6 +726,8 @@ mod tests {
         assert!(RELAY_REFRESH_MARGIN_SECONDS < 10 * 60);
         assert!(valid_refresh_token("abrt_example.token"));
         assert!(!valid_refresh_token(""));
-        assert!(!valid_refresh_token(&"x".repeat(MAX_REFRESH_TOKEN_BYTES + 1)));
+        assert!(!valid_refresh_token(
+            &"x".repeat(MAX_REFRESH_TOKEN_BYTES + 1)
+        ));
     }
 }
