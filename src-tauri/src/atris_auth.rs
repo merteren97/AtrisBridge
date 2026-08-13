@@ -3,7 +3,7 @@ use std::{
     time::Duration,
 };
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use reqwest::{
     blocking::{Client, Response},
     StatusCode,
@@ -19,6 +19,8 @@ const AUTH_BASE_URL: &str = "https://atrishub.com/api/desktop/v1/auth";
 const DEVICE_ID_KEY: &str = "atrishub_desktop_device_id";
 const CACHED_IDENTITY_KEY: &str = "atrishub_cached_identity";
 const REQUEST_TIMEOUT_SECONDS: u64 = 20;
+const LOGOUT_TIMEOUT_SECONDS: u64 = 5;
+const RELAY_REFRESH_MARGIN_SECONDS: i64 = 120;
 const MAX_SAFE_SESSION_GENERATION: u64 = 9_007_199_254_740_991;
 const MAX_ACCESS_TOKEN_BYTES: usize = 16 * 1024;
 const MAX_REFRESH_TOKEN_BYTES: usize = 1024;
@@ -163,15 +165,19 @@ struct AuthFailure {
     message: String,
 }
 
-fn client() -> Result<Client, AuthFailure> {
+fn client_with_timeout(timeout: Duration) -> Result<Client, AuthFailure> {
     Client::builder()
-        .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECONDS))
+        .timeout(timeout)
         .user_agent("AtrisBridge-Desktop")
         .build()
         .map_err(|error| AuthFailure {
             kind: FailureKind::Network,
             message: format!("Could not initialize AtrisHub client: {error}"),
         })
+}
+
+fn client() -> Result<Client, AuthFailure> {
+    client_with_timeout(Duration::from_secs(REQUEST_TIMEOUT_SECONDS))
 }
 
 fn parse_response(response: Response) -> Result<DesktopSessionResponse, AuthFailure> {
@@ -229,7 +235,10 @@ fn send_refresh(refresh_token: &str) -> Result<DesktopSessionResponse, AuthFailu
 }
 
 fn send_logout(refresh_token: &str) {
-    let Ok(client) = client() else {
+    if !valid_refresh_token(refresh_token) {
+        return;
+    }
+    let Ok(client) = client_with_timeout(Duration::from_secs(LOGOUT_TIMEOUT_SECONDS)) else {
         return;
     };
     let _ = client
@@ -313,6 +322,10 @@ fn clear_local_identity(app: &AppHandle) -> Result<(), String> {
     vault.and(cache)
 }
 
+fn valid_refresh_token(value: &str) -> bool {
+    !value.is_empty() && value.len() <= MAX_REFRESH_TOKEN_BYTES
+}
+
 fn parse_future_timestamp(value: &str, label: &str) -> Result<DateTime<Utc>, String> {
     let parsed = DateTime::parse_from_rfc3339(value)
         .map(|value| value.with_timezone(&Utc))
@@ -346,7 +359,7 @@ fn validate_desktop_session_response(
     if response.access_token.is_empty() || response.access_token.len() > MAX_ACCESS_TOKEN_BYTES {
         return Err("AtrisHub returned an invalid desktop access token.".into());
     }
-    if response.refresh_token.is_empty() || response.refresh_token.len() > MAX_REFRESH_TOKEN_BYTES {
+    if !valid_refresh_token(&response.refresh_token) {
         return Err("AtrisHub returned an invalid desktop refresh token.".into());
     }
     let access_token_expires_at = parse_future_timestamp(
@@ -375,24 +388,27 @@ fn commit_session(
     let binding = match validate_desktop_session_response(&response) {
         Ok(binding) => binding,
         Err(error) => {
-            if !response.refresh_token.is_empty()
-                && response.refresh_token.len() <= MAX_REFRESH_TOKEN_BYTES
-            {
-                send_logout(&response.refresh_token);
-            }
+            send_logout(&response.refresh_token);
             return Err(error);
         }
     };
     if remember {
         if let Err(error) = secure_store::store_atrishub_refresh_token(&response.refresh_token) {
             send_logout(&response.refresh_token);
+            let _ = clear_local_identity(app);
             return Err(error);
         }
-    } else {
-        secure_store::delete_atrishub_refresh_token()?;
+    } else if let Err(error) = secure_store::delete_atrishub_refresh_token() {
+        send_logout(&response.refresh_token);
+        let _ = clear_local_identity(app);
+        return Err(error);
     }
     let snapshot = AuthSnapshot::signed_in(&response, remember);
-    cache_snapshot(app, &snapshot)?;
+    if let Err(error) = cache_snapshot(app, &snapshot) {
+        send_logout(&response.refresh_token);
+        let _ = clear_local_identity(app);
+        return Err(error);
+    }
     let mut runtime = state
         .inner
         .lock()
@@ -410,6 +426,7 @@ fn commit_session(
 fn current_desktop_session_credential(
     app: &AppHandle,
     state: &AtrisHubAuthState,
+    minimum_access_validity_seconds: i64,
 ) -> Result<Option<DesktopSessionCredential>, String> {
     let runtime = state
         .inner
@@ -418,6 +435,9 @@ fn current_desktop_session_credential(
     let Some(snapshot) = runtime.snapshot.as_ref() else {
         return Ok(None);
     };
+    if snapshot.state != "signed_in" {
+        return Ok(None);
+    }
     let Some(user) = snapshot.user.as_ref() else {
         return Ok(None);
     };
@@ -437,7 +457,9 @@ fn current_desktop_session_credential(
     else {
         return Ok(None);
     };
-    if *access_token_expires_at <= Utc::now() || *session_expires_at <= Utc::now() {
+    let now = Utc::now();
+    let refresh_deadline = now + ChronoDuration::seconds(minimum_access_validity_seconds.max(0));
+    if *access_token_expires_at <= refresh_deadline || *session_expires_at <= now {
         return Ok(None);
     }
     Ok(Some(DesktopSessionCredential {
@@ -455,7 +477,67 @@ pub(crate) fn desktop_session_credential(
     app: &AppHandle,
     state: &AtrisHubAuthState,
 ) -> Result<Option<DesktopSessionCredential>, String> {
-    current_desktop_session_credential(app, state)
+    current_desktop_session_credential(app, state, 0)
+}
+
+pub(crate) fn ensure_desktop_session_credential(
+    app: &AppHandle,
+    state: &AtrisHubAuthState,
+) -> Result<Option<DesktopSessionCredential>, String> {
+    if let Some(current) =
+        current_desktop_session_credential(app, state, RELAY_REFRESH_MARGIN_SECONDS)?
+    {
+        return Ok(Some(current));
+    }
+
+    let _refresh_operation = AUTH_REFRESH_LOCK
+        .lock()
+        .map_err(|_| "AtrisHub refresh operation lock is unavailable.".to_string())?;
+    if let Some(current) =
+        current_desktop_session_credential(app, state, RELAY_REFRESH_MARGIN_SECONDS)?
+    {
+        return Ok(Some(current));
+    }
+
+    let remembered = secure_store::load_atrishub_refresh_token()?;
+    let volatile = state
+        .inner
+        .lock()
+        .map_err(|_| "AtrisHub authentication state is unavailable.".to_string())?
+        .volatile_refresh_token
+        .clone();
+    let remember = remembered.is_some();
+    let Some(refresh_token) = remembered.as_deref().or(volatile.as_deref()) else {
+        return Ok(None);
+    };
+    if !valid_refresh_token(refresh_token) {
+        clear_local_identity(app)?;
+        let mut runtime = state
+            .inner
+            .lock()
+            .map_err(|_| "AtrisHub authentication state is unavailable.".to_string())?;
+        *runtime = AuthRuntime::default();
+        return Err("AtrisHub desktop refresh credential is invalid.".into());
+    }
+
+    match send_refresh(refresh_token) {
+        Ok(response) => {
+            commit_session(app, state, response, remember)?;
+            current_desktop_session_credential(app, state, RELAY_REFRESH_MARGIN_SECONDS)
+        }
+        Err(failure) if matches!(failure.kind, FailureKind::Network | FailureKind::Server) => {
+            Err(failure.message)
+        }
+        Err(failure) => {
+            clear_local_identity(app)?;
+            let mut runtime = state
+                .inner
+                .lock()
+                .map_err(|_| "AtrisHub authentication state is unavailable.".to_string())?;
+            *runtime = AuthRuntime::default();
+            Err(failure.message)
+        }
+    }
 }
 
 fn set_runtime_snapshot(
@@ -530,6 +612,11 @@ pub async fn restore_atrishub_session(
             let snapshot = AuthSnapshot::signed_out();
             return set_runtime_snapshot(&auth_state, snapshot);
         };
+        if !valid_refresh_token(&refresh_token) {
+            clear_local_identity(&app)?;
+            set_runtime_snapshot(&auth_state, AuthSnapshot::signed_out())?;
+            return Err("AtrisHub desktop refresh credential is invalid.".into());
+        }
         match send_refresh(&refresh_token) {
             Ok(response) => commit_session(&app, &auth_state, response, true),
             Err(failure) if matches!(failure.kind, FailureKind::Network | FailureKind::Server) => {
@@ -560,6 +647,9 @@ pub async fn logout_atrishub(
 ) -> Result<AuthSnapshot, String> {
     let auth_state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let _refresh_operation = AUTH_REFRESH_LOCK
+            .lock()
+            .map_err(|_| "AtrisHub refresh operation lock is unavailable.".to_string())?;
         let remembered = secure_store::load_atrishub_refresh_token()?;
         let volatile = auth_state
             .inner
@@ -567,15 +657,24 @@ pub async fn logout_atrishub(
             .map_err(|_| "AtrisHub authentication state is unavailable.".to_string())?
             .volatile_refresh_token
             .clone();
-        if let Some(token) = remembered.as_deref().or(volatile.as_deref()) {
+        let remote_token = remembered
+            .as_deref()
+            .or(volatile.as_deref())
+            .filter(|value| valid_refresh_token(value))
+            .map(str::to_owned);
+
+        let clear_result = clear_local_identity(&app);
+        {
+            let mut runtime = auth_state
+                .inner
+                .lock()
+                .map_err(|_| "AtrisHub authentication state is unavailable.".to_string())?;
+            *runtime = AuthRuntime::default();
+        }
+        if let Some(token) = remote_token.as_deref() {
             send_logout(token);
         }
-        clear_local_identity(&app)?;
-        let mut runtime = auth_state
-            .inner
-            .lock()
-            .map_err(|_| "AtrisHub authentication state is unavailable.".to_string())?;
-        *runtime = AuthRuntime::default();
+        clear_result?;
         Ok(AuthSnapshot::signed_out())
     })
     .await
@@ -619,5 +718,16 @@ mod tests {
             MAX_SAFE_SESSION_GENERATION + 1
         )
         .is_err());
+    }
+
+    #[test]
+    fn relay_refresh_margin_and_refresh_token_bounds_are_conservative() {
+        assert!(RELAY_REFRESH_MARGIN_SECONDS >= 60);
+        assert!(RELAY_REFRESH_MARGIN_SECONDS < 10 * 60);
+        assert!(valid_refresh_token("abrt_example.token"));
+        assert!(!valid_refresh_token(""));
+        assert!(!valid_refresh_token(
+            &"x".repeat(MAX_REFRESH_TOKEN_BYTES + 1)
+        ));
     }
 }
