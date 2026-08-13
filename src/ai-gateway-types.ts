@@ -23,6 +23,21 @@ export interface LocalMcpClientStatus {
   detail: string;
 }
 
+export interface RemoteMcpClientRecord {
+  principal: string;
+  displayName: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+}
+
+export type RemoteMcpRelayState = "signed_out" | "connecting" | "online" | "reconnecting";
+
+export interface RemoteMcpRelayStatus {
+  started: boolean;
+  state: RemoteMcpRelayState;
+  observedClients: number;
+}
+
 export type AiPermissionRule = "deny" | "ask" | "allow";
 
 export interface AiPermissionRecord {

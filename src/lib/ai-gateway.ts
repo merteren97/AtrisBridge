@@ -4,6 +4,8 @@ import type {
   AiPermissionRule,
   LocalMcpClientKind,
   LocalMcpClientStatus,
+  RemoteMcpClientRecord,
+  RemoteMcpRelayStatus,
 } from "../ai-gateway-types";
 
 export async function listLocalMcpClients(): Promise<LocalMcpClientStatus[]> {
@@ -20,6 +22,14 @@ export async function unregisterLocalMcpClient(
   kind: LocalMcpClientKind,
 ): Promise<LocalMcpClientStatus> {
   return invoke<LocalMcpClientStatus>("unregister_local_mcp_client", { kind });
+}
+
+export async function listRemoteMcpClients(): Promise<RemoteMcpClientRecord[]> {
+  return invoke<RemoteMcpClientRecord[]>("list_remote_mcp_clients");
+}
+
+export async function getRemoteMcpRelayStatus(): Promise<RemoteMcpRelayStatus> {
+  return invoke<RemoteMcpRelayStatus>("remote_mcp_relay_status");
 }
 
 export async function listAiPermissions(
