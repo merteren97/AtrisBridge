@@ -1,7 +1,11 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use futures_util::{FutureExt, SinkExt, StreamExt};
-use tauri::{AppHandle, Manager};
+use serde::Serialize;
+use tauri::{AppHandle, Manager, State};
 use tokio::{
     sync::{mpsc, Semaphore},
     time::{interval, sleep, timeout, Duration, MissedTickBehavior},
@@ -38,6 +42,24 @@ struct RelayManagerRuntime {
     started: bool,
     state: RelayLifecycleState,
     wake_tx: Option<mpsc::UnboundedSender<()>>,
+    clients: HashMap<String, RemoteMcpClientRecord>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteMcpClientRecord {
+    pub principal: String,
+    pub display_name: String,
+    pub first_seen_at: String,
+    pub last_seen_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteMcpRelayStatus {
+    pub started: bool,
+    pub state: &'static str,
+    pub observed_clients: usize,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -47,6 +69,17 @@ enum RelayLifecycleState {
     Connecting,
     Online,
     Reconnecting,
+}
+
+impl RelayLifecycleState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SignedOut => "signed_out",
+            Self::Connecting => "connecting",
+            Self::Online => "online",
+            Self::Reconnecting => "reconnecting",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +108,64 @@ pub fn setup(app: &AppHandle) -> Result<(), String> {
         relay_loop(relay_app, manager, wake_rx).await;
     });
     Ok(())
+}
+
+#[tauri::command]
+pub fn remote_mcp_relay_status(
+    manager: State<'_, RemoteMcpRelayManager>,
+) -> Result<RemoteMcpRelayStatus, String> {
+    let runtime = manager
+        .inner
+        .lock()
+        .map_err(|_| "AtrisBridge remote MCP manager state is unavailable.".to_string())?;
+    Ok(RemoteMcpRelayStatus {
+        started: runtime.started,
+        state: runtime.state.as_str(),
+        observed_clients: runtime.clients.len(),
+    })
+}
+
+#[tauri::command]
+pub fn list_remote_mcp_clients(
+    manager: State<'_, RemoteMcpRelayManager>,
+) -> Result<Vec<RemoteMcpClientRecord>, String> {
+    let runtime = manager
+        .inner
+        .lock()
+        .map_err(|_| "AtrisBridge remote MCP manager state is unavailable.".to_string())?;
+    let mut clients = runtime.clients.values().cloned().collect::<Vec<_>>();
+    clients.sort_by(|left, right| {
+        right
+            .last_seen_at
+            .cmp(&left.last_seen_at)
+            .then_with(|| left.principal.cmp(&right.principal))
+    });
+    Ok(clients)
+}
+
+pub(crate) fn remember_remote_client(app: &AppHandle, principal: &str, display_name: &str) {
+    let now = chrono::Utc::now().to_rfc3339();
+    let manager = app.state::<RemoteMcpRelayManager>();
+    let Ok(mut runtime) = manager.inner.lock() else {
+        return;
+    };
+    match runtime.clients.get_mut(principal) {
+        Some(client) => {
+            client.display_name = display_name.to_string();
+            client.last_seen_at = now;
+        }
+        None => {
+            runtime.clients.insert(
+                principal.to_string(),
+                RemoteMcpClientRecord {
+                    principal: principal.to_string(),
+                    display_name: display_name.to_string(),
+                    first_seen_at: now.clone(),
+                    last_seen_at: now,
+                },
+            );
+        }
+    }
 }
 
 pub(crate) fn notify_auth_changed(app: &AppHandle) {
