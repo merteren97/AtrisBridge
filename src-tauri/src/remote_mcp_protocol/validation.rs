@@ -124,9 +124,8 @@ pub(crate) fn validate_relay_request(
             "Remote MCP protocol version is not supported.",
         ));
     }
-    validate_mcp_request_metadata(&request.mcp).map_err(|message| {
-        relay_failure("invalid_mcp_request", &message)
-    })
+    validate_mcp_request_metadata(&request.mcp)
+        .map_err(|message| relay_failure("invalid_mcp_request", &message))
 }
 
 fn validate_mcp_request_metadata(mcp: &RelayMcpRequest) -> Result<(), String> {
@@ -250,11 +249,7 @@ fn relay_failure(code: &'static str, message: &str) -> RelayFailure {
 
 fn canonical_uuid_v4(value: &str) -> bool {
     Uuid::parse_str(value).is_ok_and(|parsed| {
-        parsed.get_version_num() == 4
-            && parsed
-                .hyphenated()
-                .to_string()
-                .eq_ignore_ascii_case(value)
+        parsed.get_version_num() == 4 && parsed.hyphenated().to_string().eq_ignore_ascii_case(value)
     })
 }
 

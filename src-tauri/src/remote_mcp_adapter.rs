@@ -35,11 +35,7 @@ pub(crate) fn dispatch(app: &AppHandle, principal: &str, message: &Value) -> Val
     }
 }
 
-fn dispatch_result(
-    app: &AppHandle,
-    principal: &str,
-    message: &Value,
-) -> Result<Value, RpcFailure> {
+fn dispatch_result(app: &AppHandle, principal: &str, message: &Value) -> Result<Value, RpcFailure> {
     let method = message
         .get("method")
         .and_then(Value::as_str)
@@ -329,7 +325,10 @@ fn apply_task_payload(
             let safe = local_mcp_ipc::redact_local_paths(app, message);
             result.insert(
                 "error".into(),
-                task_error(task.error_code.as_deref().unwrap_or("command_failed"), &safe),
+                task_error(
+                    task.error_code.as_deref().unwrap_or("command_failed"),
+                    &safe,
+                ),
             );
         }
         _ => {}
