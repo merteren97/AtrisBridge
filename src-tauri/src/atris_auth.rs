@@ -3,6 +3,7 @@ use std::{
     time::Duration,
 };
 
+use chrono::{DateTime, Utc};
 use reqwest::{
     blocking::{Client, Response},
     StatusCode,
@@ -18,6 +19,9 @@ const AUTH_BASE_URL: &str = "https://atrishub.com/api/desktop/v1/auth";
 const DEVICE_ID_KEY: &str = "atrishub_desktop_device_id";
 const CACHED_IDENTITY_KEY: &str = "atrishub_cached_identity";
 const REQUEST_TIMEOUT_SECONDS: u64 = 20;
+const MAX_SAFE_SESSION_GENERATION: u64 = 9_007_199_254_740_991;
+const MAX_ACCESS_TOKEN_BYTES: usize = 16 * 1024;
+const MAX_REFRESH_TOKEN_BYTES: usize = 1024;
 static AUTH_REFRESH_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Default)]
@@ -28,8 +32,20 @@ pub struct AtrisHubAuthState {
 #[derive(Default)]
 struct AuthRuntime {
     access_token: Option<String>,
+    access_token_expires_at: Option<DateTime<Utc>>,
+    desktop_session_id: Option<String>,
+    session_generation: Option<u64>,
+    session_expires_at: Option<DateTime<Utc>>,
     volatile_refresh_token: Option<String>,
     snapshot: Option<AuthSnapshot>,
+}
+
+#[derive(Debug, Clone)]
+struct ValidatedDesktopSessionBinding {
+    desktop_session_id: String,
+    session_generation: u64,
+    access_token_expires_at: DateTime<Utc>,
+    session_expires_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +113,8 @@ struct DesktopSessionResponse {
     access_token_expires_at: String,
     refresh_token: String,
     session_expires_at: String,
+    desktop_session_id: String,
+    session_generation: u64,
 }
 
 #[derive(Serialize)]
@@ -284,12 +302,72 @@ fn clear_local_identity(app: &AppHandle) -> Result<(), String> {
     vault.and(cache)
 }
 
+fn parse_future_timestamp(value: &str, label: &str) -> Result<DateTime<Utc>, String> {
+    let parsed = DateTime::parse_from_rfc3339(value)
+        .map(|value| value.with_timezone(&Utc))
+        .map_err(|_| format!("AtrisHub returned an invalid {label}."))?;
+    if parsed <= Utc::now() {
+        return Err(format!("AtrisHub returned an expired {label}."));
+    }
+    Ok(parsed)
+}
+
+fn validate_desktop_session_binding(
+    desktop_session_id: &str,
+    session_generation: u64,
+) -> Result<(), String> {
+    let parsed = Uuid::parse_str(desktop_session_id)
+        .map_err(|_| "AtrisHub returned an invalid Desktop session identifier.".to_string())?;
+    let canonical = parsed.hyphenated().to_string();
+    if !canonical.eq_ignore_ascii_case(desktop_session_id) || parsed.get_version_num() != 4 {
+        return Err("AtrisHub returned a non-canonical Desktop session identifier.".into());
+    }
+    if session_generation == 0 || session_generation > MAX_SAFE_SESSION_GENERATION {
+        return Err("AtrisHub returned an invalid Desktop session generation.".into());
+    }
+    Ok(())
+}
+
+fn validate_desktop_session_response(
+    response: &DesktopSessionResponse,
+) -> Result<ValidatedDesktopSessionBinding, String> {
+    validate_desktop_session_binding(&response.desktop_session_id, response.session_generation)?;
+    if response.access_token.is_empty() || response.access_token.len() > MAX_ACCESS_TOKEN_BYTES {
+        return Err("AtrisHub returned an invalid desktop access token.".into());
+    }
+    if response.refresh_token.is_empty() || response.refresh_token.len() > MAX_REFRESH_TOKEN_BYTES {
+        return Err("AtrisHub returned an invalid desktop refresh token.".into());
+    }
+    let access_token_expires_at =
+        parse_future_timestamp(&response.access_token_expires_at, "desktop access-token expiry")?;
+    let session_expires_at =
+        parse_future_timestamp(&response.session_expires_at, "Desktop session expiry")?;
+    if session_expires_at <= access_token_expires_at {
+        return Err("AtrisHub returned an inconsistent Desktop session lifetime.".into());
+    }
+    Ok(ValidatedDesktopSessionBinding {
+        desktop_session_id: response.desktop_session_id.clone(),
+        session_generation: response.session_generation,
+        access_token_expires_at,
+        session_expires_at,
+    })
+}
+
 fn commit_session(
     app: &AppHandle,
     state: &AtrisHubAuthState,
     response: DesktopSessionResponse,
     remember: bool,
 ) -> Result<AuthSnapshot, String> {
+    let binding = match validate_desktop_session_response(&response) {
+        Ok(binding) => binding,
+        Err(error) => {
+            if !response.refresh_token.is_empty() && response.refresh_token.len() <= MAX_REFRESH_TOKEN_BYTES {
+                send_logout(&response.refresh_token);
+            }
+            return Err(error);
+        }
+    };
     if remember {
         if let Err(error) = secure_store::store_atrishub_refresh_token(&response.refresh_token) {
             send_logout(&response.refresh_token);
@@ -305,6 +383,10 @@ fn commit_session(
         .lock()
         .map_err(|_| "AtrisHub authentication state is unavailable.".to_string())?;
     runtime.access_token = Some(response.access_token);
+    runtime.access_token_expires_at = Some(binding.access_token_expires_at);
+    runtime.desktop_session_id = Some(binding.desktop_session_id);
+    runtime.session_generation = Some(binding.session_generation);
+    runtime.session_expires_at = Some(binding.session_expires_at);
     runtime.volatile_refresh_token = (!remember).then_some(response.refresh_token);
     runtime.snapshot = Some(snapshot.clone());
     Ok(snapshot)
@@ -318,6 +400,13 @@ fn set_runtime_snapshot(
         .inner
         .lock()
         .map_err(|_| "AtrisHub authentication state is unavailable.".to_string())?;
+    if snapshot.state != "signed_in" {
+        runtime.access_token = None;
+        runtime.access_token_expires_at = None;
+        runtime.desktop_session_id = None;
+        runtime.session_generation = None;
+        runtime.session_expires_at = None;
+    }
     runtime.snapshot = Some(snapshot.clone());
     Ok(snapshot)
 }
@@ -437,11 +526,42 @@ mod tests {
     }
 
     #[test]
-    fn snapshots_never_serialize_credentials() {
+    fn snapshots_never_serialize_credentials_or_relay_binding() {
         let snapshot = AuthSnapshot::signed_out();
         let json = serde_json::to_string(&snapshot).expect("snapshot");
         assert!(!json.contains("accessToken"));
         assert!(!json.contains("refreshToken"));
+        assert!(!json.contains("desktopSessionId"));
+        assert!(!json.contains("sessionGeneration"));
         assert!(!json.contains("password"));
+    }
+
+    #[test]
+    fn desktop_session_binding_requires_canonical_uuid_v4_and_safe_generation() {
+        assert!(validate_desktop_session_binding(
+            "123e4567-e89b-42d3-a456-426614174000",
+            1
+        )
+        .is_ok());
+        assert!(validate_desktop_session_binding(
+            "123e4567-e89b-12d3-a456-426614174000",
+            1
+        )
+        .is_err());
+        assert!(validate_desktop_session_binding(
+            "123e4567e89b42d3a456426614174000",
+            1
+        )
+        .is_err());
+        assert!(validate_desktop_session_binding(
+            "123e4567-e89b-42d3-a456-426614174000",
+            0
+        )
+        .is_err());
+        assert!(validate_desktop_session_binding(
+            "123e4567-e89b-42d3-a456-426614174000",
+            MAX_SAFE_SESSION_GENERATION + 1
+        )
+        .is_err());
     }
 }
