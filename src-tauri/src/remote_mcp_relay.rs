@@ -183,6 +183,9 @@ pub(crate) fn notify_auth_changed(app: &AppHandle) {
 fn set_lifecycle(manager: &RemoteMcpRelayManager, state: RelayLifecycleState) {
     if let Ok(mut runtime) = manager.inner.lock() {
         runtime.state = state;
+        if state == RelayLifecycleState::SignedOut {
+            runtime.clients.clear();
+        }
     }
 }
 
