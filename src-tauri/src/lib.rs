@@ -44,6 +44,11 @@ use workspace_coordinator::WorkspaceMutationCoordinator;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // This must remain the first plugin. A second launch is intercepted before
+        // setup can initialize SQLite recovery, sync/watch, local MCP or auth state.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            desktop_shell::show_main_window(app);
+        }))
         .manage(ProviderSessionStore::default())
         .manage(ContinuousSyncManager::default())
         .manage(WorkspaceMutationCoordinator::default())
