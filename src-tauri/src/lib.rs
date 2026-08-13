@@ -25,6 +25,10 @@ mod mcp_dispatch;
 mod models;
 mod provider_sessions;
 mod provider_storage;
+mod remote_mcp_adapter;
+mod remote_mcp_protocol;
+mod remote_mcp_relay;
+mod remote_mcp_request;
 mod restore;
 mod scanner;
 mod secure_store;
@@ -40,6 +44,7 @@ use ai_task::AiTaskManager;
 use atris_auth::AtrisHubAuthState;
 use continuous::ContinuousSyncManager;
 use provider_sessions::ProviderSessionStore;
+use remote_mcp_relay::RemoteMcpRelayManager;
 use workspace_coordinator::WorkspaceMutationCoordinator;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -61,6 +66,7 @@ pub fn run() {
         .manage(WorkspaceMutationCoordinator::default())
         .manage(AtrisHubAuthState::default())
         .manage(AiTaskManager::default())
+        .manage(RemoteMcpRelayManager::default())
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
             let focus_app = app.handle().clone();
@@ -85,11 +91,13 @@ pub fn run() {
             ai_task::initialize(app.handle()).map_err(std::io::Error::other)?;
             ai_changeset::initialize(app.handle()).map_err(std::io::Error::other)?;
             continuous::initialize(app.handle()).map_err(std::io::Error::other)?;
-            // Publish local MCP only after every authority/recovery service is ready. MCP
-            // remains fail-closed when the loopback/vault transport cannot be established,
-            // but an MCP-specific transport failure must not take down normal desktop sync.
+            // Publish both MCP transports only after every authority/recovery service is ready.
+            // Transport-specific failures stay fail-closed without taking down normal desktop sync.
             if let Err(error) = local_mcp_ipc::setup(app.handle()) {
                 eprintln!("AtrisBridge local MCP authority is unavailable: {error}");
+            }
+            if let Err(error) = remote_mcp_relay::setup(app.handle()) {
+                eprintln!("AtrisBridge remote MCP relay is unavailable: {error}");
             }
             Ok(())
         })
