@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use tauri::{AppHandle, Manager};
 use tokio::{
     sync::{mpsc, Semaphore},
@@ -153,9 +153,12 @@ async fn relay_loop(
 }
 
 async fn wait_or_wake(wake_rx: &mut mpsc::UnboundedReceiver<()>, duration: Duration) {
-    tokio::select! {
-        _ = sleep(duration) => {}
-        _ = wake_rx.recv() => {}
+    let timer = sleep(duration).fuse();
+    let wake = wake_rx.recv().fuse();
+    futures_util::pin_mut!(timer, wake);
+    futures_util::select! {
+        _ = timer => {},
+        _ = wake => {},
     }
 }
 
@@ -205,15 +208,21 @@ async fn run_connection(
     auth_tick.tick().await;
 
     loop {
-        tokio::select! {
-            outgoing = outgoing_rx.recv() => {
+        let outgoing = outgoing_rx.recv().fuse();
+        let incoming = reader.next().fuse();
+        let auth = auth_tick.tick().fuse();
+        let wake = wake_rx.recv().fuse();
+        futures_util::pin_mut!(outgoing, incoming, auth, wake);
+
+        futures_util::select! {
+            outgoing = outgoing => {
                 let Some(outgoing) = outgoing else {
                     return Ok(ConnectionExit::RemoteClosed);
                 };
                 writer.send(outgoing).await
                     .map_err(|error| format!("Could not write AtrisHub relay WebSocket: {error}"))?;
-            }
-            incoming = reader.next() => {
+            },
+            incoming = incoming => {
                 let Some(incoming) = incoming else {
                     return Ok(ConnectionExit::RemoteClosed);
                 };
@@ -270,19 +279,19 @@ async fn run_connection(
                     Message::Binary(_) => return Err("AtrisHub relay sent an unexpected binary payload.".into()),
                     Message::Frame(_) => {}
                 }
-            }
-            _ = auth_tick.tick() => {
+            },
+            _ = auth => {
                 if !credential_still_current(app.clone(), &credential).await? {
                     let _ = writer.send(Message::Close(None)).await;
                     return Ok(ConnectionExit::CredentialChanged);
                 }
-            }
-            wake = wake_rx.recv() => {
+            },
+            wake = wake => {
                 if wake.is_none() || !credential_still_current(app.clone(), &credential).await? {
                     let _ = writer.send(Message::Close(None)).await;
                     return Ok(ConnectionExit::CredentialChanged);
                 }
-            }
+            },
         }
     }
 }
