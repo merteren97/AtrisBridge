@@ -5,10 +5,7 @@ pub(crate) use validation::*;
 use serde_json::Value;
 use tauri::AppHandle;
 
-use crate::{
-    atris_auth::DesktopSessionCredential,
-    remote_mcp_request,
-};
+use crate::{atris_auth::DesktopSessionCredential, remote_mcp_request};
 
 pub(crate) fn process_relay_request(
     app: &AppHandle,
