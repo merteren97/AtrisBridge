@@ -51,11 +51,15 @@ pub fn acquire_or_notify() -> Result<InstanceRole, String> {
     let lock_path = lock_path();
 
     for _ in 0..ACQUIRE_RETRIES {
-        let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
-            .map_err(|error| format!("Could not reserve the AtrisBridge instance channel: {error}"))?;
+        let listener =
+            TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).map_err(|error| {
+                format!("Could not reserve the AtrisBridge instance channel: {error}")
+            })?;
         let port = listener
             .local_addr()
-            .map_err(|error| format!("Could not inspect the AtrisBridge instance channel: {error}"))?
+            .map_err(|error| {
+                format!("Could not inspect the AtrisBridge instance channel: {error}")
+            })?
             .port();
         let nonce = Uuid::new_v4().simple().to_string();
 
@@ -73,16 +77,15 @@ pub fn acquire_or_notify() -> Result<InstanceRole, String> {
                     .and_then(|_| file.sync_all())
                 {
                     let _ = fs::remove_file(&lock_path);
-                    return Err(format!("Could not publish the AtrisBridge instance authority: {error}"));
+                    return Err(format!(
+                        "Could not publish the AtrisBridge instance authority: {error}"
+                    ));
                 }
 
                 let (focus_tx, focus_rx) = mpsc::channel();
                 start_listener(listener, nonce.clone(), focus_tx)?;
                 return Ok(InstanceRole::Primary(PrimaryInstance {
-                    guard: SingleInstanceGuard {
-                        lock_path,
-                        nonce,
-                    },
+                    guard: SingleInstanceGuard { lock_path, nonce },
                     focus_requests: focus_rx,
                 }));
             }
@@ -97,12 +100,17 @@ pub fn acquire_or_notify() -> Result<InstanceRole, String> {
                 }
             }
             Err(error) => {
-                return Err(format!("Could not claim the AtrisBridge instance authority: {error}"));
+                return Err(format!(
+                    "Could not claim the AtrisBridge instance authority: {error}"
+                ));
             }
         }
     }
 
-    Err("AtrisBridge could not establish an exclusive process authority after bounded retries.".into())
+    Err(
+        "AtrisBridge could not establish an exclusive process authority after bounded retries."
+            .into(),
+    )
 }
 
 impl Drop for SingleInstanceGuard {
@@ -132,17 +140,21 @@ fn notify_existing_instance(lock_path: &Path) -> Result<NotifyOutcome, String> {
     for attempt in 0..STALE_CONNECT_RETRIES {
         match TcpStream::connect_timeout(&address, CONNECT_TIMEOUT) {
             Ok(mut stream) => {
-                stream
-                    .set_read_timeout(Some(IO_TIMEOUT))
-                    .map_err(|error| format!("Could not configure the AtrisBridge instance channel: {error}"))?;
+                stream.set_read_timeout(Some(IO_TIMEOUT)).map_err(|error| {
+                    format!("Could not configure the AtrisBridge instance channel: {error}")
+                })?;
                 stream
                     .set_write_timeout(Some(IO_TIMEOUT))
-                    .map_err(|error| format!("Could not configure the AtrisBridge instance channel: {error}"))?;
+                    .map_err(|error| {
+                        format!("Could not configure the AtrisBridge instance channel: {error}")
+                    })?;
                 let request = focus_request(&record.nonce);
                 stream
                     .write_all(request.as_bytes())
                     .and_then(|_| stream.flush())
-                    .map_err(|error| format!("Could not notify the running AtrisBridge instance: {error}"))?;
+                    .map_err(|error| {
+                        format!("Could not notify the running AtrisBridge instance: {error}")
+                    })?;
 
                 let mut response = String::new();
                 let mut reader = BufReader::new(stream);
@@ -150,7 +162,9 @@ fn notify_existing_instance(lock_path: &Path) -> Result<NotifyOutcome, String> {
                     .by_ref()
                     .take(MAX_FOCUS_LINE_BYTES)
                     .read_line(&mut response)
-                    .map_err(|error| format!("Could not verify the running AtrisBridge instance: {error}"))?;
+                    .map_err(|error| {
+                        format!("Could not verify the running AtrisBridge instance: {error}")
+                    })?;
                 return Ok(if response.trim_end() == "OK" {
                     NotifyOutcome::Notified
                 } else {
@@ -230,7 +244,11 @@ fn valid_focus_request(line: &str, nonce: &str) -> bool {
     line.trim_end() == format!("{FOCUS_MAGIC} {nonce}")
 }
 
-fn start_listener(listener: TcpListener, nonce: String, focus_tx: Sender<()>) -> Result<(), String> {
+fn start_listener(
+    listener: TcpListener,
+    nonce: String,
+    focus_tx: Sender<()>,
+) -> Result<(), String> {
     thread::Builder::new()
         .name("atrisbridge-single-instance".into())
         .spawn(move || {
@@ -272,7 +290,9 @@ fn remove_stale_lock(lock_path: &Path) -> Result<(), String> {
     match fs::remove_file(lock_path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("Could not retire a stale AtrisBridge instance record: {error}")),
+        Err(error) => Err(format!(
+            "Could not retire a stale AtrisBridge instance record: {error}"
+        )),
     }
 }
 
