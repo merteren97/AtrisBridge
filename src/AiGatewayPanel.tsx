@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   ChevronDown,
   CircleOff,
+  Cloud,
   Code2,
   KeyRound,
   Link2,
@@ -20,10 +21,14 @@ import type {
   AiPermissionRule,
   LocalMcpClientKind,
   LocalMcpClientStatus,
+  RemoteMcpClientRecord,
+  RemoteMcpRelayStatus,
 } from "./ai-gateway-types";
 import {
+  getRemoteMcpRelayStatus,
   listAiPermissions,
   listLocalMcpClients,
+  listRemoteMcpClients,
   registerLocalMcpClient,
   resetAiPermission,
   setAiPermission,
@@ -115,6 +120,20 @@ function statusTone(status: LocalMcpClientStatus): string {
   return "neutral";
 }
 
+function relayLabel(status: RemoteMcpRelayStatus | null): string {
+  if (!status?.started) return "Unavailable";
+  if (status.state === "online") return "Online";
+  if (status.state === "connecting") return "Connecting";
+  if (status.state === "reconnecting") return "Reconnecting";
+  return "Signed out";
+}
+
+function relayTone(status: RemoteMcpRelayStatus | null): string {
+  if (status?.state === "online") return "success";
+  if (status?.state === "connecting" || status?.state === "reconnecting") return "warning";
+  return "neutral";
+}
+
 function ruleDescription(rule: AiPermissionRule): string {
   if (rule === "allow") return "Allowed for this client and workspace";
   if (rule === "deny") return "Blocked for this client and workspace";
@@ -129,8 +148,15 @@ function groupIcon(icon: CapabilityGroup["icon"]) {
   return <Bot size={15} />;
 }
 
+function formatLastSeen(value: string): string {
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
+}
+
 export default function AiGatewayPanel({ workspaces, onError }: AiGatewayPanelProps) {
   const [clients, setClients] = useState<LocalMcpClientStatus[]>([]);
+  const [remoteClients, setRemoteClients] = useState<RemoteMcpClientRecord[]>([]);
+  const [relayStatus, setRelayStatus] = useState<RemoteMcpRelayStatus | null>(null);
   const [selectedKind, setSelectedKind] = useState<LocalMcpClientKind>("codex");
   const [workspaceId, setWorkspaceId] = useState(workspaces[0]?.id ?? "");
   const [permissions, setPermissions] = useState<AiPermissionRecord[]>([]);
@@ -155,6 +181,8 @@ export default function AiGatewayPanel({ workspaces, onError }: AiGatewayPanelPr
 
   useEffect(() => {
     void refreshClients();
+    const timer = window.setInterval(() => void refreshRemoteSurface(false), 5_000);
+    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -165,10 +193,30 @@ export default function AiGatewayPanel({ workspaces, onError }: AiGatewayPanelPr
     void refreshPermissions(workspaceId, selectedClient.principal);
   }, [workspaceId, selectedClient?.principal]);
 
+  async function refreshRemoteSurface(reportErrors = true) {
+    try {
+      const [nextRemoteClients, nextRelayStatus] = await Promise.all([
+        listRemoteMcpClients(),
+        getRemoteMcpRelayStatus(),
+      ]);
+      setRemoteClients(nextRemoteClients);
+      setRelayStatus(nextRelayStatus);
+    } catch (error) {
+      if (reportErrors) onError(String(error));
+    }
+  }
+
   async function refreshClients() {
     try {
       setClientBusy("refresh");
-      setClients(await listLocalMcpClients());
+      const [nextClients, nextRemoteClients, nextRelayStatus] = await Promise.all([
+        listLocalMcpClients(),
+        listRemoteMcpClients(),
+        getRemoteMcpRelayStatus(),
+      ]);
+      setClients(nextClients);
+      setRemoteClients(nextRemoteClients);
+      setRelayStatus(nextRelayStatus);
     } catch (error) {
       onError(String(error));
     } finally {
@@ -252,8 +300,8 @@ export default function AiGatewayPanel({ workspaces, onError }: AiGatewayPanelPr
       <div className="settings-heading ai-gateway-heading">
         <div>
           <span className="section-kicker">AI workspace gateway</span>
-          <h2>Local AI clients</h2>
-          <p>Connect supported MCP hosts to the packaged AtrisBridge companion. Workspace files remain behind the desktop Rust authority and its permission model.</p>
+          <h2>AI clients</h2>
+          <p>Connect supported local MCP hosts and inspect the authenticated AtrisHub relay. Workspace files remain behind the desktop Rust authority and its permission model.</p>
         </div>
         <button className="button secondary" type="button" onClick={() => void refreshClients()} disabled={clientBusy !== null}>
           <RefreshCw size={14} className={clientBusy === "refresh" ? "spin" : ""} /> Refresh
@@ -292,9 +340,35 @@ export default function AiGatewayPanel({ workspaces, onError }: AiGatewayPanelPr
         })}
       </div>
 
+      <div className="ai-remote-section">
+        <div className="ai-remote-heading">
+          <div>
+            <span className="section-kicker">AtrisHub relay</span>
+            <h3>Remote MCP access</h3>
+            <p>The desktop opens an outbound secure connection to AtrisHub. No inbound workstation port is exposed.</p>
+          </div>
+          <span className={`ai-status-pill ${relayTone(relayStatus)}`}>
+            {relayStatus?.state === "online" ? <CheckCircle2 size={11} /> : <Cloud size={11} />}
+            {relayLabel(relayStatus)}
+          </span>
+        </div>
+        {remoteClients.length === 0 ? (
+          <div className="ai-remote-empty"><Cloud size={18} /><div><strong>No remote client activity in this desktop session</strong><p>Verified remote client identities will appear here after an authenticated relay request reaches this device.</p></div></div>
+        ) : (
+          <div className="ai-remote-list">
+            {remoteClients.map((client) => (
+              <div className="ai-remote-row" key={client.principal}>
+                <span className="ai-remote-icon"><Cloud size={16} /></span>
+                <div className="ai-remote-identity"><div><strong>{client.displayName}</strong><span>Remote</span></div><code>{client.principal}</code><small>Last seen {formatLastSeen(client.lastSeenAt)}</small></div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       <div className="ai-policy-boundary">
         <ShieldCheck size={16} />
-        <div><strong>Registration does not grant workspace access.</strong><p>Each client gets its own principal and each workspace keeps an independent capability policy. The companion cannot select a different client identity.</p></div>
+        <div><strong>Registration does not grant workspace access.</strong><p>Each client gets its own principal and each workspace keeps an independent capability policy. Remote relay visibility is status-only in this step; local policy controls remain unchanged.</p></div>
       </div>
 
       <div className="ai-permission-header">
