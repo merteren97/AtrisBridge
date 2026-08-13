@@ -55,6 +55,12 @@ interface CapabilityGroup {
   capabilities: CapabilityDefinition[];
 }
 
+interface PolicyClient {
+  principal: string;
+  label: string;
+  transport: "local" | "remote";
+}
+
 const CAPABILITY_GROUPS: CapabilityGroup[] = [
   {
     label: "Workspace",
@@ -158,14 +164,19 @@ export default function AiGatewayPanel({ workspaces, onError }: AiGatewayPanelPr
   const [remoteClients, setRemoteClients] = useState<RemoteMcpClientRecord[]>([]);
   const [relayStatus, setRelayStatus] = useState<RemoteMcpRelayStatus | null>(null);
   const [selectedKind, setSelectedKind] = useState<LocalMcpClientKind>("codex");
+  const [policyPrincipal, setPolicyPrincipal] = useState("");
   const [workspaceId, setWorkspaceId] = useState(workspaces[0]?.id ?? "");
   const [permissions, setPermissions] = useState<AiPermissionRecord[]>([]);
   const [clientBusy, setClientBusy] = useState<LocalMcpClientKind | "refresh" | null>(null);
   const [permissionBusy, setPermissionBusy] = useState<string | "reset-all" | null>(null);
 
-  const selectedClient = useMemo(
-    () => clients.find((client) => client.kind === selectedKind) ?? null,
-    [clients, selectedKind],
+  const policyClients = useMemo<PolicyClient[]>(() => [
+    ...clients.map((client) => ({ principal: client.principal, label: client.label, transport: "local" as const })),
+    ...remoteClients.map((client) => ({ principal: client.principal, label: client.displayName, transport: "remote" as const })),
+  ], [clients, remoteClients]);
+  const selectedPolicyClient = useMemo(
+    () => policyClients.find((client) => client.principal === policyPrincipal) ?? null,
+    [policyClients, policyPrincipal],
   );
   const selectedWorkspace = useMemo(
     () => workspaces.find((workspace) => workspace.id === workspaceId) ?? null,
@@ -186,12 +197,18 @@ export default function AiGatewayPanel({ workspaces, onError }: AiGatewayPanelPr
   }, []);
 
   useEffect(() => {
-    if (!workspaceId || !selectedClient) {
+    if (policyPrincipal && policyClients.some((client) => client.principal === policyPrincipal)) return;
+    const preferred = clients.find((client) => client.kind === selectedKind) ?? clients[0];
+    setPolicyPrincipal(preferred?.principal ?? remoteClients[0]?.principal ?? "");
+  }, [clients, policyClients, policyPrincipal, remoteClients, selectedKind]);
+
+  useEffect(() => {
+    if (!workspaceId || !selectedPolicyClient) {
       setPermissions([]);
       return;
     }
-    void refreshPermissions(workspaceId, selectedClient.principal);
-  }, [workspaceId, selectedClient?.principal]);
+    void refreshPermissions(workspaceId, selectedPolicyClient.principal);
+  }, [workspaceId, selectedPolicyClient?.principal]);
 
   async function refreshRemoteSurface(reportErrors = true) {
     try {
@@ -238,6 +255,7 @@ export default function AiGatewayPanel({ workspaces, onError }: AiGatewayPanelPr
       const status = await registerLocalMcpClient(kind);
       setClients((current) => current.map((item) => item.kind === kind ? status : item));
       setSelectedKind(kind);
+      setPolicyPrincipal(status.principal);
     } catch (error) {
       onError(String(error));
       await refreshClients();
@@ -261,11 +279,16 @@ export default function AiGatewayPanel({ workspaces, onError }: AiGatewayPanelPr
     }
   }
 
+  function selectLocalPolicy(kind: LocalMcpClientKind, status: LocalMcpClientStatus | undefined) {
+    setSelectedKind(kind);
+    if (status) setPolicyPrincipal(status.principal);
+  }
+
   async function handleRule(capability: string, rule: AiPermissionRule) {
-    if (!workspaceId || !selectedClient) return;
+    if (!workspaceId || !selectedPolicyClient) return;
     try {
       setPermissionBusy(capability);
-      const next = await setAiPermission(workspaceId, selectedClient.principal, capability, rule);
+      const next = await setAiPermission(workspaceId, selectedPolicyClient.principal, capability, rule);
       setPermissions((current) => current.map((item) => item.capability === capability ? next : item));
     } catch (error) {
       onError(String(error));
@@ -275,25 +298,27 @@ export default function AiGatewayPanel({ workspaces, onError }: AiGatewayPanelPr
   }
 
   async function handleResetAll() {
-    if (!workspaceId || !selectedClient) return;
+    if (!workspaceId || !selectedPolicyClient) return;
     try {
       setPermissionBusy("reset-all");
       const next: AiPermissionRecord[] = [];
       for (const group of CAPABILITY_GROUPS) {
         for (const capability of group.capabilities) {
-          next.push(await resetAiPermission(workspaceId, selectedClient.principal, capability.id));
+          next.push(await resetAiPermission(workspaceId, selectedPolicyClient.principal, capability.id));
         }
       }
       setPermissions(next);
     } catch (error) {
       onError(String(error));
-      await refreshPermissions(workspaceId, selectedClient.principal);
+      await refreshPermissions(workspaceId, selectedPolicyClient.principal);
     } finally {
       setPermissionBusy(null);
     }
   }
 
   const permissionMap = new Map(permissions.map((permission) => [permission.capability, permission]));
+  const localPolicyClients = policyClients.filter((client) => client.transport === "local");
+  const remotePolicyClients = policyClients.filter((client) => client.transport === "remote");
 
   return (
     <section id="ai-clients" className="settings-section ai-gateway-section">
@@ -313,8 +338,8 @@ export default function AiGatewayPanel({ workspaces, onError }: AiGatewayPanelPr
           const status = clients.find((client) => client.kind === kind);
           const loading = clientBusy === kind;
           return (
-            <article key={kind} className={`ai-client-card ${selectedKind === kind ? "selected" : ""}`}>
-              <button className="ai-client-select" type="button" onClick={() => setSelectedKind(kind)} aria-label={`Manage ${status?.label ?? kind}`}>
+            <article key={kind} className={`ai-client-card ${selectedPolicyClient?.principal === status?.principal ? "selected" : ""}`}>
+              <button className="ai-client-select" type="button" onClick={() => selectLocalPolicy(kind, status)} aria-label={`Manage ${status?.label ?? kind}`}>
                 <span className="ai-client-icon">{kind === "codex" ? <Code2 size={19} /> : <Bot size={19} />}</span>
                 <span className="ai-client-copy">
                   <span className="ai-client-title-line">
@@ -357,9 +382,10 @@ export default function AiGatewayPanel({ workspaces, onError }: AiGatewayPanelPr
         ) : (
           <div className="ai-remote-list">
             {remoteClients.map((client) => (
-              <div className="ai-remote-row" key={client.principal}>
+              <div className={`ai-remote-row ${policyPrincipal === client.principal ? "selected" : ""}`} key={client.principal}>
                 <span className="ai-remote-icon"><Cloud size={16} /></span>
                 <div className="ai-remote-identity"><div><strong>{client.displayName}</strong><span>Remote</span></div><code>{client.principal}</code><small>Last seen {formatLastSeen(client.lastSeenAt)}</small></div>
+                <button className="button secondary" type="button" onClick={() => setPolicyPrincipal(client.principal)}>Manage policy</button>
               </div>
             ))}
           </div>
@@ -368,19 +394,26 @@ export default function AiGatewayPanel({ workspaces, onError }: AiGatewayPanelPr
 
       <div className="ai-policy-boundary">
         <ShieldCheck size={16} />
-        <div><strong>Registration does not grant workspace access.</strong><p>Each client gets its own principal and each workspace keeps an independent capability policy. Remote relay visibility is status-only in this step; local policy controls remain unchanged.</p></div>
+        <div><strong>Connection does not grant workspace access.</strong><p>Local registrations and verified remote principals share the same independent capability policy. AtrisBridge never promotes an observed client automatically.</p></div>
       </div>
 
       <div className="ai-permission-header">
         <div>
           <span className="section-kicker">Workspace policy</span>
           <h3>Capability grants</h3>
-          <p>Choose what {selectedClient?.label ?? "this client"} may do inside one AtrisBridge workspace.</p>
+          <p>Choose what {selectedPolicyClient?.label ?? "this client"} may do inside one AtrisBridge workspace.</p>
         </div>
         <div className="ai-policy-selectors">
           <label>
             <span>Client</span>
-            <div className="select-wrap"><select value={selectedKind} onChange={(event) => setSelectedKind(event.target.value as LocalMcpClientKind)}>{CLIENT_ORDER.map((kind) => <option value={kind} key={kind}>{clients.find((client) => client.kind === kind)?.label ?? kind}</option>)}</select><ChevronDown size={13} /></div>
+            <div className="select-wrap">
+              <select value={policyPrincipal} onChange={(event) => setPolicyPrincipal(event.target.value)} disabled={policyClients.length === 0}>
+                {policyClients.length === 0 && <option value="">No client</option>}
+                {localPolicyClients.length > 0 && <optgroup label="Local">{localPolicyClients.map((client) => <option value={client.principal} key={client.principal}>{client.label}</option>)}</optgroup>}
+                {remotePolicyClients.length > 0 && <optgroup label="Remote">{remotePolicyClients.map((client) => <option value={client.principal} key={client.principal}>{client.label}</option>)}</optgroup>}
+              </select>
+              <ChevronDown size={13} />
+            </div>
           </label>
           <label>
             <span>Workspace</span>
@@ -391,12 +424,14 @@ export default function AiGatewayPanel({ workspaces, onError }: AiGatewayPanelPr
 
       {!selectedWorkspace ? (
         <div className="ai-policy-empty"><Bot size={19} /><div><strong>Add a workspace before granting AI access</strong><p>Permissions are never global across project folders.</p></div></div>
+      ) : !selectedPolicyClient ? (
+        <div className="ai-policy-empty"><ShieldAlert size={19} /><div><strong>Select an AI client to manage policy</strong><p>Remote clients appear after their authenticated relay identity has been observed by this desktop session.</p></div></div>
       ) : (
         <div className="ai-permission-surface">
           <div className="ai-policy-summary">
-            <div><small>Client principal</small><strong>{selectedClient?.principal ?? `mcp.${selectedKind}`}</strong></div>
+            <div><small>Client principal</small><strong>{selectedPolicyClient.principal}</strong></div>
             <div><small>Workspace</small><strong>{selectedWorkspace.name}</strong></div>
-            <button className="text-action" type="button" onClick={() => void handleResetAll()} disabled={!selectedClient || permissionBusy !== null}><RotateCcw size={13} /> Reset all to Ask</button>
+            <button className="text-action" type="button" onClick={() => void handleResetAll()} disabled={permissionBusy !== null}><RotateCcw size={13} /> Reset all to Ask</button>
           </div>
 
           <div className="ai-capability-groups">
@@ -430,7 +465,7 @@ export default function AiGatewayPanel({ workspaces, onError }: AiGatewayPanelPr
 
       <div className="ai-ask-note">
         <TriangleAlert size={14} />
-        <div><strong>Ask remains fail-closed for non-interactive MCP sessions.</strong><p>AtrisBridge will not silently promote an Ask rule to Allow. Set a persistent workspace/client rule when you intentionally want a local MCP client to use that capability without a separate approval flow.</p></div>
+        <div><strong>Ask remains fail-closed for non-interactive MCP sessions.</strong><p>AtrisBridge will not silently promote an Ask rule to Allow. Set a persistent workspace/client rule only when you intentionally want that verified client principal to use a capability without a separate approval flow.</p></div>
       </div>
     </section>
   );
