@@ -29,6 +29,7 @@ mod restore;
 mod scanner;
 mod secure_store;
 mod services;
+mod single_instance;
 mod storage;
 mod sync;
 mod sync_recovery;
@@ -43,14 +44,35 @@ use workspace_coordinator::WorkspaceMutationCoordinator;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let primary = match single_instance::acquire_or_notify()
+        .expect("AtrisBridge could not establish its single-process authority")
+    {
+        single_instance::InstanceRole::Primary(primary) => primary,
+        single_instance::InstanceRole::Secondary => return,
+    };
+    let single_instance::PrimaryInstance {
+        guard,
+        focus_requests,
+    } = primary;
+
+    let run_result = tauri::Builder::default()
         .manage(ProviderSessionStore::default())
         .manage(ContinuousSyncManager::default())
         .manage(WorkspaceMutationCoordinator::default())
         .manage(AtrisHubAuthState::default())
         .manage(AiTaskManager::default())
         .plugin(tauri_plugin_dialog::init())
-        .setup(|app| {
+        .setup(move |app| {
+            let focus_app = app.handle().clone();
+            std::thread::Builder::new()
+                .name("atrisbridge-instance-focus".into())
+                .spawn(move || {
+                    while focus_requests.recv().is_ok() {
+                        desktop_shell::show_main_window(&focus_app);
+                    }
+                })
+                .map_err(std::io::Error::other)?;
+
             app_updater::setup(app)?;
             desktop_shell::setup(app)?;
             backup_recovery::recover_interrupted_plans(app.handle())
@@ -159,6 +181,8 @@ pub fn run() {
             continuous::update_continuous_sync_settings,
             continuous::run_continuous_sync_now,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running AtrisBridge");
+        .run(tauri::generate_context!());
+
+    drop(guard);
+    run_result.expect("error while running AtrisBridge");
 }
