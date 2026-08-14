@@ -68,9 +68,11 @@ export default function BackupPanel({
   const [busy, setBusy] = useState<"load" | "prepare" | "quick" | "mode" | null>(null);
   const [restoreBusy, setRestoreBusy] = useState(false);
   const [continuous, setContinuous] = useState<ContinuousSyncStatus | null>(null);
+  const [feedback, setFeedback] = useState<string | null>(null);
   const continuousEnabled = Boolean(continuous?.enabled);
 
   useEffect(() => {
+    setFeedback(null);
     if (workspace.syncMode !== "two_way") void loadLatest();
   }, [workspace.id, workspace.syncMode, continuousEnabled]);
 
@@ -88,8 +90,16 @@ export default function BackupPanel({
   async function handlePrepare() {
     try {
       setBusy("prepare");
+      setFeedback(null);
       const next = await prepareBackupPlan(workspace.id);
       setPlan(next);
+      setFeedback(
+        next.blockedCount > 0
+          ? `Plan refreshed. ${next.blockedCount} path${next.blockedCount === 1 ? " needs" : "s need"} review before upload.`
+          : next.uploadCount > 0
+            ? `Plan refreshed. ${next.uploadCount} safe upload${next.uploadCount === 1 ? " is" : "s are"} ready for review.`
+            : "Plan refreshed. Google Drive is already up to date for the current evidence.",
+      );
       await onChanged();
     } catch (error) {
       onError(String(error));
@@ -101,23 +111,37 @@ export default function BackupPanel({
   async function handleQuickBackup() {
     try {
       setBusy("quick");
+      setFeedback(null);
       const next = await prepareBackupPlan(workspace.id);
       setPlan(next);
       await onChanged();
 
       if (next.blockedCount > 0) {
-        onError(`Backup needs review before upload: ${next.blockedCount} path${next.blockedCount === 1 ? " is" : "s are"} blocked by the current safety policy. Review the prepared plan; nothing was uploaded.`);
+        setFeedback(
+          `Backup plan needs review: ${next.blockedCount} path${next.blockedCount === 1 ? " is" : "s are"} blocked by the current safety policy. Nothing was uploaded.`,
+        );
         return;
       }
-      if (next.uploadCount === 0) return;
+      if (next.uploadCount === 0) {
+        setFeedback("Google Drive is already up to date for the current workspace evidence.");
+        return;
+      }
 
       const confirmed = window.confirm(
         `Back up ${next.uploadCount.toLocaleString()} file${next.uploadCount === 1 ? "" : "s"} (${formatBytes(next.uploadBytes)}) to ${next.remotePath}?\n\nAtrisBridge just refreshed local and Google Drive evidence. It will upload create/update operations only; remote deletes and downloads are not part of Backup mode.`,
       );
-      if (!confirmed) return;
+      if (!confirmed) {
+        setFeedback("Backup plan is ready. Upload was cancelled before any file was transferred.");
+        return;
+      }
 
-      await executeBackupPlan(next.id);
+      const report = await executeBackupPlan(next.id);
       setPlan(await getLatestBackupPlan(workspace.id));
+      setFeedback(
+        report.failedCount > 0
+          ? `Backup finished with attention required: ${report.completedCount} completed, ${report.failedCount} failed.`
+          : `Backed up ${report.completedCount} file${report.completedCount === 1 ? "" : "s"} to Google Drive successfully.`,
+      );
       await onChanged();
     } catch (error) {
       onError(String(error));
@@ -134,6 +158,7 @@ export default function BackupPanel({
     if (!confirmed) return;
     try {
       setBusy("mode");
+      setFeedback(null);
       await setWorkspaceSyncMode(workspace.id, "two_way");
       await onChanged();
     } catch (error) {
@@ -228,6 +253,16 @@ export default function BackupPanel({
             </button>
           </div>
         </div>
+
+        {feedback && !continuousEnabled && (
+          <div className="backup-plan-empty">
+            <ShieldCheck size={18} />
+            <div>
+              <strong>Backup status</strong>
+              <span>{feedback}</span>
+            </div>
+          </div>
+        )}
 
         {continuousEnabled ? (
           <div className="backup-plan-empty">
