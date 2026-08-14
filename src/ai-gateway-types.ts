@@ -36,6 +36,11 @@ export interface RemoteMcpRelayStatus {
   started: boolean;
   state: RemoteMcpRelayState;
   observedClients: number;
+  connectorUrl: string;
+  lastError: string | null;
+  lastAttemptAt: string | null;
+  lastConnectedAt: string | null;
+  reconnectAttempts: number;
 }
 
 export type AiPermissionRule = "deny" | "ask" | "allow";
