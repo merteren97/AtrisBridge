@@ -25,6 +25,7 @@ use crate::{
 };
 
 const RELAY_URL: &str = "wss://atrishub.com/api/mcp/relay/v1/connect";
+const CONNECTOR_URL: &str = "https://atrishub.com/api/mcp/v1/mcp";
 const MAX_RELAY_PAYLOAD_BYTES: usize = 6 * 1024 * 1024;
 const MAX_LOCAL_INFLIGHT: usize = 32;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -43,6 +44,10 @@ struct RelayManagerRuntime {
     state: RelayLifecycleState,
     wake_tx: Option<mpsc::UnboundedSender<()>>,
     clients: HashMap<String, RemoteMcpClientRecord>,
+    last_error: Option<String>,
+    last_attempt_at: Option<String>,
+    last_connected_at: Option<String>,
+    reconnect_attempts: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -60,6 +65,11 @@ pub struct RemoteMcpRelayStatus {
     pub started: bool,
     pub state: &'static str,
     pub observed_clients: usize,
+    pub connector_url: &'static str,
+    pub last_error: Option<String>,
+    pub last_attempt_at: Option<String>,
+    pub last_connected_at: Option<String>,
+    pub reconnect_attempts: u32,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -110,6 +120,19 @@ pub fn setup(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+fn status_snapshot(runtime: &RelayManagerRuntime) -> RemoteMcpRelayStatus {
+    RemoteMcpRelayStatus {
+        started: runtime.started,
+        state: runtime.state.as_str(),
+        observed_clients: runtime.clients.len(),
+        connector_url: CONNECTOR_URL,
+        last_error: runtime.last_error.clone(),
+        last_attempt_at: runtime.last_attempt_at.clone(),
+        last_connected_at: runtime.last_connected_at.clone(),
+        reconnect_attempts: runtime.reconnect_attempts,
+    }
+}
+
 #[tauri::command]
 pub fn remote_mcp_relay_status(
     manager: State<'_, RemoteMcpRelayManager>,
@@ -118,11 +141,33 @@ pub fn remote_mcp_relay_status(
         .inner
         .lock()
         .map_err(|_| "AtrisBridge remote MCP manager state is unavailable.".to_string())?;
-    Ok(RemoteMcpRelayStatus {
-        started: runtime.started,
-        state: runtime.state.as_str(),
-        observed_clients: runtime.clients.len(),
-    })
+    Ok(status_snapshot(&runtime))
+}
+
+#[tauri::command]
+pub fn retry_remote_mcp_relay(
+    manager: State<'_, RemoteMcpRelayManager>,
+) -> Result<RemoteMcpRelayStatus, String> {
+    let sender = {
+        let runtime = manager
+            .inner
+            .lock()
+            .map_err(|_| "AtrisBridge remote MCP manager state is unavailable.".to_string())?;
+        if !runtime.started {
+            return Err("AtrisBridge remote MCP relay has not started.".into());
+        }
+        runtime.wake_tx.clone()
+    };
+    let sender = sender.ok_or_else(|| "AtrisBridge remote MCP relay wake channel is unavailable.".to_string())?;
+    sender
+        .send(())
+        .map_err(|_| "AtrisBridge remote MCP relay worker is unavailable.".to_string())?;
+
+    let runtime = manager
+        .inner
+        .lock()
+        .map_err(|_| "AtrisBridge remote MCP manager state is unavailable.".to_string())?;
+    Ok(status_snapshot(&runtime))
 }
 
 #[tauri::command]
@@ -180,12 +225,36 @@ pub(crate) fn notify_auth_changed(app: &AppHandle) {
     }
 }
 
-fn set_lifecycle(manager: &RemoteMcpRelayManager, state: RelayLifecycleState) {
+fn mark_signed_out(manager: &RemoteMcpRelayManager) {
     if let Ok(mut runtime) = manager.inner.lock() {
-        runtime.state = state;
-        if state == RelayLifecycleState::SignedOut {
-            runtime.clients.clear();
-        }
+        runtime.state = RelayLifecycleState::SignedOut;
+        runtime.clients.clear();
+        runtime.last_error = None;
+        runtime.reconnect_attempts = 0;
+    }
+}
+
+fn mark_connecting(manager: &RemoteMcpRelayManager) {
+    if let Ok(mut runtime) = manager.inner.lock() {
+        runtime.state = RelayLifecycleState::Connecting;
+        runtime.last_attempt_at = Some(chrono::Utc::now().to_rfc3339());
+        runtime.reconnect_attempts = runtime.reconnect_attempts.saturating_add(1);
+    }
+}
+
+fn mark_online(manager: &RemoteMcpRelayManager) {
+    if let Ok(mut runtime) = manager.inner.lock() {
+        runtime.state = RelayLifecycleState::Online;
+        runtime.last_connected_at = Some(chrono::Utc::now().to_rfc3339());
+        runtime.last_error = None;
+        runtime.reconnect_attempts = 0;
+    }
+}
+
+fn mark_reconnecting(manager: &RemoteMcpRelayManager, error: &str) {
+    if let Ok(mut runtime) = manager.inner.lock() {
+        runtime.state = RelayLifecycleState::Reconnecting;
+        runtime.last_error = Some(remote_mcp_protocol::bounded_error(error));
     }
 }
 
@@ -199,13 +268,13 @@ async fn relay_loop(
         let credential = match load_relay_credential(app.clone()).await {
             Ok(Some(value)) => value,
             Ok(None) => {
-                set_lifecycle(&manager, RelayLifecycleState::SignedOut);
+                mark_signed_out(&manager);
                 reconnect_seconds = 1;
                 wait_or_wake(&mut wake_rx, SIGNED_OUT_RETRY).await;
                 continue;
             }
             Err(error) => {
-                set_lifecycle(&manager, RelayLifecycleState::Reconnecting);
+                mark_reconnecting(&manager, &error);
                 eprintln!(
                     "AtrisBridge remote MCP credential refresh failed: {}",
                     remote_mcp_protocol::bounded_error(&error)
@@ -216,15 +285,21 @@ async fn relay_loop(
             }
         };
 
-        set_lifecycle(&manager, RelayLifecycleState::Connecting);
+        mark_connecting(&manager);
         match connect_relay(&credential).await {
             Ok(socket) => {
                 reconnect_seconds = 1;
-                set_lifecycle(&manager, RelayLifecycleState::Online);
+                mark_online(&manager);
                 match run_connection(app.clone(), credential, socket, &mut wake_rx).await {
                     Ok(ConnectionExit::CredentialChanged) => continue,
-                    Ok(ConnectionExit::RemoteClosed) => {}
+                    Ok(ConnectionExit::RemoteClosed) => {
+                        mark_reconnecting(
+                            &manager,
+                            "AtrisHub closed the remote MCP relay WebSocket.",
+                        );
+                    }
                     Err(error) => {
+                        mark_reconnecting(&manager, &error);
                         eprintln!(
                             "AtrisBridge remote MCP relay disconnected: {}",
                             remote_mcp_protocol::bounded_error(&error)
@@ -233,6 +308,7 @@ async fn relay_loop(
                 }
             }
             Err(error) => {
+                mark_reconnecting(&manager, &error);
                 eprintln!(
                     "AtrisBridge remote MCP relay connection failed: {}",
                     remote_mcp_protocol::bounded_error(&error)
@@ -240,7 +316,6 @@ async fn relay_loop(
             }
         }
 
-        set_lifecycle(&manager, RelayLifecycleState::Reconnecting);
         wait_or_wake(&mut wake_rx, backoff_delay(reconnect_seconds)).await;
         reconnect_seconds = (reconnect_seconds.saturating_mul(2)).min(30);
     }
