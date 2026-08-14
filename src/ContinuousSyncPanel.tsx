@@ -176,9 +176,9 @@ export default function ContinuousSyncPanel({
         <div className="continuous-title">
           <span className="continuous-icon"><Waves size={17} /></span>
           <div>
-            <small>Phase 8 automation</small>
-            <strong>Continuous watch mode</strong>
-            <span>Filesystem events trigger a guarded reconciliation, never direct synchronization.</span>
+            <small>Continuous backup & sync</small>
+            <strong>Watch mode</strong>
+            <span>Filesystem events trigger a guarded reconciliation, never an unreviewed destructive action.</span>
           </div>
         </div>
         <span className={`continuous-state ${state.tone}`}>
@@ -210,7 +210,7 @@ export default function ContinuousSyncPanel({
           </div>
           <div>
             <small>Automatic policy</small>
-            <strong>{status?.autoApplySafe ? "Safe transfers only" : "Review all plans"}</strong>
+            <strong>{status?.autoApplySafe ? "Safe transfers run automatically" : "Safe transfers wait for review"}</strong>
             <span>Conflicts and deletions always require review</span>
           </div>
         </div>
@@ -229,7 +229,7 @@ export default function ContinuousSyncPanel({
           <label className="continuous-setting">
             <span>
               <strong>Auto-apply safe transfers</strong>
-              <small>Only upload/download plans with zero conflicts, blocks, and deletions.</small>
+              <small>{status?.autoApplySafe ? "Safe upload/download plans execute after evidence checks." : "Off: reconciliation detects changes, but uploads/downloads remain pending until you review them."}</small>
             </span>
             <input
               type="checkbox"
@@ -261,9 +261,10 @@ export default function ContinuousSyncPanel({
                 className="secondary-button"
                 onClick={handleRunNow}
                 disabled={busy !== null || reconciliationRunning || status?.state === "debouncing"}
+                title="Refresh local and Google Drive evidence now. This only transfers safe changes automatically when Auto-apply safe transfers is enabled."
               >
                 {busy === "run" ? <RefreshCw className="spin" size={14} /> : <RefreshCw size={14} />}
-                Check now
+                Reconcile now
               </button>
             )}
             <button
@@ -285,7 +286,7 @@ export default function ContinuousSyncPanel({
 
       <div className="continuous-safety-strip">
         <ShieldCheck size={13} />
-        Native watcher events are hints only. Every cycle re-scans the workspace, re-reads provider evidence, then uses the existing evidence-locked planner/executor. Phase 8 never auto-applies deletion actions.
+        Reconcile now refreshes evidence; it is not an unconditional upload button. Turn on Auto-apply safe transfers for automatic safe backups, or pause watch mode and use Back up now for an explicit one-off upload.
       </div>
     </section>
   );
