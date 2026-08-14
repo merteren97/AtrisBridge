@@ -21,6 +21,7 @@ use crate::{
         normalize_relative_path, regular_file_evidence, resolve_target_path, AiPathClass,
     },
     database::open_database,
+    durable_fs,
     services::workspace as workspace_service,
     storage::find_workspace,
     workspace_coordinator::{
@@ -612,10 +613,15 @@ fn prepare_recovery_snapshots(
         ) {
             continue;
         }
+
+        if item.recovery_path.is_some() {
+            validate_recovery_snapshot(app, stored, item)?;
+            continue;
+        }
+
         let source = resolve_target_path(root, &item.public.relative_path, false)?;
         ensure_before_evidence(&source, item)?;
         let recovery = recovery_root.join(format!("{}.bak", item.public.id));
-        ensure_absent(&recovery, "AI recovery snapshot")?;
         let before_size = item
             .public
             .before_size
@@ -625,37 +631,72 @@ fn prepare_recovery_snapshots(
             .before_hash
             .as_deref()
             .ok_or_else(|| "Stored before-hash evidence is missing.".to_string())?;
-        if item.public.sensitive {
-            if before_size > ai_artifact_crypto::MAX_SENSITIVE_ARTIFACT_BYTES {
+
+        match fs::symlink_metadata(&recovery) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() || !metadata.is_file() {
+                    return Err(
+                        "Unjournaled AI recovery artifact is not a regular AtrisBridge-owned file."
+                            .into(),
+                    );
+                }
+                if !artifact_matches(&recovery, item, "recovery", before_size, before_hash)? {
+                    return Err(
+                        "Unjournaled AI recovery artifact does not match current workspace evidence."
+                            .into(),
+                    );
+                }
+                durable_fs::remove_regular_file(&recovery).map_err(|error| {
+                    format!("Could not clean stale AI recovery artifact before retry: {error}")
+                })?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
                 return Err(format!(
-                    "Sensitive AI recovery artifacts are limited to {} bytes.",
-                    ai_artifact_crypto::MAX_SENSITIVE_ARTIFACT_BYTES
+                    "Could not inspect AI recovery snapshot before retry: {error}"
                 ));
             }
-            let bytes = fs::read(&source)
-                .map_err(|error| format!("Could not read sensitive AI recovery source: {error}"))?;
-            ai_artifact_crypto::write_encrypted_artifact(
-                &recovery,
-                &bytes,
-                &artifact_aad(&item.public.id, "recovery"),
-            )?;
-        } else {
-            fs::copy(&source, &recovery)
-                .map_err(|error| format!("Could not create AI recovery snapshot: {error}"))?;
-            File::open(&recovery)
-                .and_then(|file| file.sync_all())
-                .map_err(|error| format!("Could not flush AI recovery snapshot: {error}"))?;
         }
-        if !artifact_matches(&recovery, item, "recovery", before_size, before_hash)? {
-            return Err("AI recovery snapshot failed fingerprint verification.".into());
+
+        let snapshot_result = (|| -> Result<(), String> {
+            if item.public.sensitive {
+                if before_size > ai_artifact_crypto::MAX_SENSITIVE_ARTIFACT_BYTES {
+                    return Err(format!(
+                        "Sensitive AI recovery artifacts are limited to {} bytes.",
+                        ai_artifact_crypto::MAX_SENSITIVE_ARTIFACT_BYTES
+                    ));
+                }
+                let bytes = fs::read(&source).map_err(|error| {
+                    format!("Could not read sensitive AI recovery source: {error}")
+                })?;
+                ai_artifact_crypto::write_encrypted_artifact(
+                    &recovery,
+                    &bytes,
+                    &artifact_aad(&item.public.id, "recovery"),
+                )?;
+            } else {
+                durable_fs::copy_new_file(&source, &recovery)
+                    .map_err(|error| format!("Could not create AI recovery snapshot: {error}"))?;
+            }
+            if !artifact_matches(&recovery, item, "recovery", before_size, before_hash)? {
+                return Err("AI recovery snapshot failed fingerprint verification.".into());
+            }
+            Ok(())
+        })();
+
+        if let Err(error) = snapshot_result {
+            let _ = durable_fs::remove_regular_file(&recovery);
+            return Err(error);
         }
+
         let connection = open_changeset_database(app)?;
-        connection
-            .execute(
-                "UPDATE ai_changeset_items SET recovery_path = ?1 WHERE id = ?2",
-                params![recovery.to_string_lossy().to_string(), item.public.id],
-            )
-            .map_err(|error| format!("Could not journal AI recovery snapshot: {error}"))?;
+        if let Err(error) = connection.execute(
+            "UPDATE ai_changeset_items SET recovery_path = ?1 WHERE id = ?2",
+            params![recovery.to_string_lossy().to_string(), item.public.id],
+        ) {
+            let _ = durable_fs::remove_regular_file(&recovery);
+            return Err(format!("Could not journal AI recovery snapshot: {error}"));
+        }
     }
     Ok(())
 }
@@ -719,11 +760,8 @@ fn place_payload(target: &Path, item: &StoredChangesetItem, replace: bool) -> Re
         )?;
         write_owned_file(&stage, &plaintext)?;
     } else {
-        fs::copy(&payload, &stage)
-            .map_err(|error| format!("Could not stage AI changeset payload: {error}"))?;
-        File::open(&stage)
-            .and_then(|file| file.sync_all())
-            .map_err(|error| format!("Could not flush AI staging artifact: {error}"))?;
+        durable_fs::copy_new_file(&payload, &stage)
+            .map_err(|error| format!("Could not durably stage AI changeset payload: {error}"))?;
     }
     let after_size = item
         .public
@@ -735,7 +773,7 @@ fn place_payload(target: &Path, item: &StoredChangesetItem, replace: bool) -> Re
         .as_deref()
         .ok_or_else(|| "Stored after-hash evidence is missing.".to_string())?;
     if !file_matches(&stage, after_size, after_hash)? {
-        let _ = fs::remove_file(&stage);
+        let _ = durable_fs::remove_regular_file(&stage);
         return Err("AI staging artifact failed fingerprint verification.".into());
     }
     if replace {
@@ -743,7 +781,7 @@ fn place_payload(target: &Path, item: &StoredChangesetItem, replace: bool) -> Re
             .map_err(|error| format!("Could not replace existing workspace file: {error}"))?;
     }
     if let Err(error) = fs::rename(&stage, target) {
-        let _ = fs::remove_file(&stage);
+        let _ = durable_fs::remove_regular_file(&stage);
         return Err(format!("Could not place AI changeset payload: {error}"));
     }
     if !file_matches(target, after_size, after_hash)? {
@@ -831,8 +869,9 @@ fn cleanup_stage_artifact(target: &Path, item: &StoredChangesetItem) -> Result<(
         return Ok(());
     };
     if file_matches(&stage, after_size, after_hash)? {
-        fs::remove_file(&stage)
-            .map_err(|error| format!("Could not clean interrupted AI staging artifact: {error}"))?;
+        durable_fs::remove_regular_file(&stage).map_err(|error| {
+            format!("Could not clean interrupted AI staging artifact: {error}")
+        })?;
     }
     Ok(())
 }
@@ -859,11 +898,8 @@ fn restore_recovery_snapshot(
         )?;
         write_owned_file(&stage, &plaintext)?;
     } else {
-        fs::copy(&recovery, &stage)
-            .map_err(|error| format!("Could not stage AI rollback snapshot: {error}"))?;
-        File::open(&stage)
-            .and_then(|file| file.sync_all())
-            .map_err(|error| format!("Could not flush AI rollback staging artifact: {error}"))?;
+        durable_fs::copy_new_file(&recovery, &stage)
+            .map_err(|error| format!("Could not durably stage AI rollback snapshot: {error}"))?;
     }
     let before_size = item
         .public
@@ -875,7 +911,7 @@ fn restore_recovery_snapshot(
         .as_deref()
         .ok_or_else(|| "Stored before-hash evidence is missing.".to_string())?;
     if !file_matches(&stage, before_size, before_hash)? {
-        let _ = fs::remove_file(&stage);
+        let _ = durable_fs::remove_regular_file(&stage);
         return Err("AI rollback staging artifact failed fingerprint verification.".into());
     }
     if replace_target {
@@ -886,7 +922,7 @@ fn restore_recovery_snapshot(
         ensure_absent(&target, "AI rollback target")?;
     }
     if let Err(error) = fs::rename(&stage, &target) {
-        let _ = fs::remove_file(&stage);
+        let _ = durable_fs::remove_regular_file(&stage);
         return Err(format!("Could not restore AI rollback target: {error}"));
     }
     if !file_matches(&target, before_size, before_hash)? {
