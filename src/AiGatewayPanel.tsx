@@ -31,6 +31,7 @@ import {
   listRemoteMcpClients,
   registerLocalMcpClient,
   resetAiPermission,
+  retryRemoteMcpRelay,
   setAiPermission,
   unregisterLocalMcpClient,
 } from "./lib/ai-gateway";
@@ -60,6 +61,8 @@ interface PolicyClient {
   label: string;
   transport: "local" | "remote";
 }
+
+const CONNECTOR_URL_FALLBACK = "https://atrishub.com/api/mcp/v1/mcp";
 
 const CAPABILITY_GROUPS: CapabilityGroup[] = [
   {
@@ -154,7 +157,8 @@ function groupIcon(icon: CapabilityGroup["icon"]) {
   return <Bot size={15} />;
 }
 
-function formatLastSeen(value: string): string {
+function formatDate(value: string | null | undefined): string {
+  if (!value) return "Not yet";
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
 }
@@ -167,8 +171,8 @@ export default function AiGatewayPanel({ workspaces, onError }: AiGatewayPanelPr
   const [policyPrincipal, setPolicyPrincipal] = useState("");
   const [workspaceId, setWorkspaceId] = useState(workspaces[0]?.id ?? "");
   const [permissions, setPermissions] = useState<AiPermissionRecord[]>([]);
-  const [clientBusy, setClientBusy] = useState<LocalMcpClientKind | "refresh" | null>(null);
-  const [permissionBusy, setPermissionBusy] = useState<string | "reset-all" | null>(null);
+  const [clientBusy, setClientBusy] = useState<LocalMcpClientKind | "refresh" | "relay" | null>(null);
+  const [permissionBusy, setPermissionBusy] = useState<string | null>(null);
 
   const policyClients = useMemo<PolicyClient[]>(() => [
     ...clients.map((client) => ({ principal: client.principal, label: client.label, transport: "local" as const })),
@@ -182,6 +186,7 @@ export default function AiGatewayPanel({ workspaces, onError }: AiGatewayPanelPr
     () => workspaces.find((workspace) => workspace.id === workspaceId) ?? null,
     [workspaces, workspaceId],
   );
+  const connectorUrl = relayStatus?.connectorUrl ?? CONNECTOR_URL_FALLBACK;
 
   useEffect(() => {
     if (!workspaceId && workspaces[0]) setWorkspaceId(workspaces[0].id);
@@ -249,6 +254,26 @@ export default function AiGatewayPanel({ workspaces, onError }: AiGatewayPanelPr
     }
   }
 
+  async function handleRelayRetry() {
+    try {
+      setClientBusy("relay");
+      setRelayStatus(await retryRemoteMcpRelay());
+      window.setTimeout(() => void refreshRemoteSurface(false), 900);
+    } catch (error) {
+      onError(String(error));
+    } finally {
+      setClientBusy(null);
+    }
+  }
+
+  async function handleCopyEndpoint() {
+    try {
+      await navigator.clipboard.writeText(connectorUrl);
+    } catch (error) {
+      onError(`Could not copy MCP connector endpoint: ${String(error)}`);
+    }
+  }
+
   async function handleRegister(kind: LocalMcpClientKind) {
     try {
       setClientBusy(kind);
@@ -297,6 +322,30 @@ export default function AiGatewayPanel({ workspaces, onError }: AiGatewayPanelPr
     }
   }
 
+  async function handleAllowAll() {
+    if (!workspaceId || !selectedPolicyClient || !selectedWorkspace) return;
+    const confirmed = window.confirm(
+      `Allow all AtrisBridge capabilities for ${selectedPolicyClient.label} in ${selectedWorkspace.name}?\n\nThis includes file edits/deletes, sensitive-file read/write, project command execution, local Git, remote Git push, and destructive synchronization. The grant stays scoped to this exact client principal and workspace.`,
+    );
+    if (!confirmed) return;
+
+    try {
+      setPermissionBusy("allow-all");
+      const next: AiPermissionRecord[] = [];
+      for (const group of CAPABILITY_GROUPS) {
+        for (const capability of group.capabilities) {
+          next.push(await setAiPermission(workspaceId, selectedPolicyClient.principal, capability.id, "allow"));
+        }
+      }
+      setPermissions(next);
+    } catch (error) {
+      onError(String(error));
+      await refreshPermissions(workspaceId, selectedPolicyClient.principal);
+    } finally {
+      setPermissionBusy(null);
+    }
+  }
+
   async function handleResetAll() {
     if (!workspaceId || !selectedPolicyClient) return;
     try {
@@ -325,12 +374,74 @@ export default function AiGatewayPanel({ workspaces, onError }: AiGatewayPanelPr
       <div className="settings-heading ai-gateway-heading">
         <div>
           <span className="section-kicker">AI workspace gateway</span>
-          <h2>AI clients</h2>
-          <p>Connect supported local MCP hosts and inspect the authenticated AtrisHub relay. Workspace files remain behind the desktop Rust authority and its permission model.</p>
+          <h2>ChatGPT, remote MCP and local AI clients</h2>
+          <p>AtrisBridge keeps one Rust workspace authority while local CLI clients and authenticated AtrisHub remote clients use independent per-workspace capability grants.</p>
         </div>
         <button className="button secondary" type="button" onClick={() => void refreshClients()} disabled={clientBusy !== null}>
           <RefreshCw size={14} className={clientBusy === "refresh" ? "spin" : ""} /> Refresh
         </button>
+      </div>
+
+      <div className="ai-remote-section">
+        <div className="ai-remote-heading">
+          <div>
+            <span className="section-kicker">ChatGPT / remote MCP</span>
+            <h3>AtrisHub secure relay</h3>
+            <p>Use the public MCP endpoint in ChatGPT Developer Mode. AtrisHub handles OAuth and relays approved requests to this desktop; no inbound workstation port is exposed.</p>
+          </div>
+          <div>
+            <span className={`ai-status-pill ${relayTone(relayStatus)}`}>
+              {relayStatus?.state === "online" ? <CheckCircle2 size={11} /> : <Cloud size={11} />}
+              {relayLabel(relayStatus)}
+            </span>
+            <button className="button secondary" type="button" onClick={() => void handleRelayRetry()} disabled={clientBusy !== null}>
+              <RefreshCw size={13} className={clientBusy === "relay" ? "spin" : ""} /> Retry relay
+            </button>
+          </div>
+        </div>
+
+        <div className="ai-client-footer">
+          <code>{connectorUrl}</code>
+          <div>
+            <span className="ai-status-pill success"><ShieldCheck size={11} /> Full capability policy</span>
+            <button className="button secondary" type="button" onClick={() => void handleCopyEndpoint()}>Copy endpoint</button>
+          </div>
+        </div>
+
+        <div className="ai-policy-summary">
+          <div><small>Last connection attempt</small><strong>{formatDate(relayStatus?.lastAttemptAt)}</strong></div>
+          <div><small>Last connected</small><strong>{formatDate(relayStatus?.lastConnectedAt)}</strong></div>
+          <div><small>Reconnect attempts</small><strong>{relayStatus?.reconnectAttempts ?? 0}</strong></div>
+        </div>
+
+        {relayStatus?.lastError && (
+          <div className="ai-ask-note">
+            <TriangleAlert size={14} />
+            <div><strong>Last relay error</strong><p>{relayStatus.lastError}</p></div>
+          </div>
+        )}
+
+        {remoteClients.length === 0 ? (
+          <div className="ai-remote-empty"><Cloud size={18} /><div><strong>No authenticated remote client observed yet</strong><p>ChatGPT will appear here after Scan Tools/OAuth sends its first validated MCP request to this desktop.</p></div></div>
+        ) : (
+          <div className="ai-remote-list">
+            {remoteClients.map((client) => (
+              <div className={`ai-remote-row ${policyPrincipal === client.principal ? "selected" : ""}`} key={client.principal}>
+                <span className="ai-remote-icon"><Cloud size={16} /></span>
+                <div className="ai-remote-identity"><div><strong>{client.displayName}</strong><span>Remote</span></div><code>{client.principal}</code><small>Last seen {formatDate(client.lastSeenAt)}</small></div>
+                <button className="button secondary" type="button" onClick={() => setPolicyPrincipal(client.principal)}>Manage policy</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="ai-permission-header">
+        <div>
+          <span className="section-kicker">Local developer clients</span>
+          <h3>Codex and Claude Code</h3>
+          <p>These registrations use the packaged local MCP companion. They are separate from the ChatGPT/AtrisHub remote connector.</p>
+        </div>
       </div>
 
       <div className="ai-client-grid">
@@ -365,43 +476,16 @@ export default function AiGatewayPanel({ workspaces, onError }: AiGatewayPanelPr
         })}
       </div>
 
-      <div className="ai-remote-section">
-        <div className="ai-remote-heading">
-          <div>
-            <span className="section-kicker">AtrisHub relay</span>
-            <h3>Remote MCP access</h3>
-            <p>The desktop opens an outbound secure connection to AtrisHub. No inbound workstation port is exposed.</p>
-          </div>
-          <span className={`ai-status-pill ${relayTone(relayStatus)}`}>
-            {relayStatus?.state === "online" ? <CheckCircle2 size={11} /> : <Cloud size={11} />}
-            {relayLabel(relayStatus)}
-          </span>
-        </div>
-        {remoteClients.length === 0 ? (
-          <div className="ai-remote-empty"><Cloud size={18} /><div><strong>No remote client activity in this desktop session</strong><p>Verified remote client identities will appear here after an authenticated relay request reaches this device.</p></div></div>
-        ) : (
-          <div className="ai-remote-list">
-            {remoteClients.map((client) => (
-              <div className={`ai-remote-row ${policyPrincipal === client.principal ? "selected" : ""}`} key={client.principal}>
-                <span className="ai-remote-icon"><Cloud size={16} /></span>
-                <div className="ai-remote-identity"><div><strong>{client.displayName}</strong><span>Remote</span></div><code>{client.principal}</code><small>Last seen {formatLastSeen(client.lastSeenAt)}</small></div>
-                <button className="button secondary" type="button" onClick={() => setPolicyPrincipal(client.principal)}>Manage policy</button>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
       <div className="ai-policy-boundary">
         <ShieldCheck size={16} />
-        <div><strong>Connection does not grant workspace access.</strong><p>Local registrations and verified remote principals share the same independent capability policy. AtrisBridge never promotes an observed client automatically.</p></div>
+        <div><strong>Connection never grants workspace access by itself.</strong><p>OAuth scopes are only the remote ceiling. The selected client must still pass this exact workspace's persistent Deny / Ask / Allow capability policy.</p></div>
       </div>
 
       <div className="ai-permission-header">
         <div>
           <span className="section-kicker">Workspace policy</span>
           <h3>Capability grants</h3>
-          <p>Choose what {selectedPolicyClient?.label ?? "this client"} may do inside one AtrisBridge workspace.</p>
+          <p>Choose exactly what {selectedPolicyClient?.label ?? "this client"} may do inside one AtrisBridge workspace.</p>
         </div>
         <div className="ai-policy-selectors">
           <label>
@@ -409,8 +493,8 @@ export default function AiGatewayPanel({ workspaces, onError }: AiGatewayPanelPr
             <div className="select-wrap">
               <select value={policyPrincipal} onChange={(event) => setPolicyPrincipal(event.target.value)} disabled={policyClients.length === 0}>
                 {policyClients.length === 0 && <option value="">No client</option>}
-                {localPolicyClients.length > 0 && <optgroup label="Local">{localPolicyClients.map((client) => <option value={client.principal} key={client.principal}>{client.label}</option>)}</optgroup>}
                 {remotePolicyClients.length > 0 && <optgroup label="Remote">{remotePolicyClients.map((client) => <option value={client.principal} key={client.principal}>{client.label}</option>)}</optgroup>}
+                {localPolicyClients.length > 0 && <optgroup label="Local">{localPolicyClients.map((client) => <option value={client.principal} key={client.principal}>{client.label}</option>)}</optgroup>}
               </select>
               <ChevronDown size={13} />
             </div>
@@ -431,7 +515,10 @@ export default function AiGatewayPanel({ workspaces, onError }: AiGatewayPanelPr
           <div className="ai-policy-summary">
             <div><small>Client principal</small><strong>{selectedPolicyClient.principal}</strong></div>
             <div><small>Workspace</small><strong>{selectedWorkspace.name}</strong></div>
-            <button className="text-action" type="button" onClick={() => void handleResetAll()} disabled={permissionBusy !== null}><RotateCcw size={13} /> Reset all to Ask</button>
+            <div>
+              <button className="button primary" type="button" onClick={() => void handleAllowAll()} disabled={permissionBusy !== null}><ShieldCheck size={13} /> Allow all</button>
+              <button className="text-action" type="button" onClick={() => void handleResetAll()} disabled={permissionBusy !== null}><RotateCcw size={13} /> Reset to Ask</button>
+            </div>
           </div>
 
           <div className="ai-capability-groups">
@@ -451,7 +538,7 @@ export default function AiGatewayPanel({ workspaces, onError }: AiGatewayPanelPr
                       </div>
                       <div className="permission-segment" aria-label={`${capability.label} permission`}>
                         {(["deny", "ask", "allow"] as AiPermissionRule[]).map((option) => (
-                          <button key={option} type="button" className={rule === option ? `active ${option}` : ""} onClick={() => void handleRule(capability.id, option)} disabled={busy || permissionBusy === "reset-all"}>{busy && rule === option ? <RefreshCw className="spin" size={11} /> : option === "deny" ? "Deny" : option === "ask" ? "Ask" : "Allow"}</button>
+                          <button key={option} type="button" className={rule === option ? `active ${option}` : ""} onClick={() => void handleRule(capability.id, option)} disabled={permissionBusy !== null}>{busy && rule === option ? <RefreshCw className="spin" size={11} /> : option === "deny" ? "Deny" : option === "ask" ? "Ask" : "Allow"}</button>
                         ))}
                       </div>
                     </div>
@@ -465,7 +552,7 @@ export default function AiGatewayPanel({ workspaces, onError }: AiGatewayPanelPr
 
       <div className="ai-ask-note">
         <TriangleAlert size={14} />
-        <div><strong>Ask remains fail-closed for non-interactive MCP sessions.</strong><p>AtrisBridge will not silently promote an Ask rule to Allow. Set a persistent workspace/client rule only when you intentionally want that verified client principal to use a capability without a separate approval flow.</p></div>
+        <div><strong>Ask remains fail-closed for non-interactive MCP sessions.</strong><p>Use Allow all when you intentionally want the selected ChatGPT/AI client to have the complete capability set for this workspace. The grant does not carry to another workspace or client principal.</p></div>
       </div>
     </section>
   );
