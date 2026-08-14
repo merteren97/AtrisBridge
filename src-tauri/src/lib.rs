@@ -47,8 +47,27 @@ use provider_sessions::ProviderSessionStore;
 use remote_mcp_relay::RemoteMcpRelayManager;
 use workspace_coordinator::WorkspaceMutationCoordinator;
 
+fn install_tls_crypto_provider() {
+    if rustls::crypto::CryptoProvider::get_default().is_some() {
+        return;
+    }
+
+    // AtrisBridge uses rustls through both reqwest and tokio-tungstenite. Cargo
+    // feature unification can make more than one built-in provider available,
+    // in which case rustls intentionally refuses to guess and panics on the
+    // first TLS client configuration. Select the same AWS-LC provider used by
+    // reqwest before any desktop networking worker is spawned.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        panic!("AtrisBridge could not install a process-wide TLS crypto provider");
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    install_tls_crypto_provider();
+
     let primary = match single_instance::acquire_or_notify()
         .expect("AtrisBridge could not establish its single-process authority")
     {
