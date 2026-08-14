@@ -158,7 +158,8 @@ pub fn retry_remote_mcp_relay(
         }
         runtime.wake_tx.clone()
     };
-    let sender = sender.ok_or_else(|| "AtrisBridge remote MCP relay wake channel is unavailable.".to_string())?;
+    let sender = sender
+        .ok_or_else(|| "AtrisBridge remote MCP relay wake channel is unavailable.".to_string())?;
     sender
         .send(())
         .map_err(|_| "AtrisBridge remote MCP relay worker is unavailable.".to_string())?;
