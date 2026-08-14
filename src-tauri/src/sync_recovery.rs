@@ -1,5 +1,5 @@
 use std::{
-    fs::{self, File},
+    fs,
     path::{Component, Path, PathBuf},
 };
 
@@ -8,7 +8,7 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
-use crate::{database::open_database, scanner, storage::find_workspace};
+use crate::{database::open_database, durable_fs, scanner, storage::find_workspace};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -106,23 +106,14 @@ fn restore_sync_recovery_blocking(
     let stage = recovery_stage_path(&target, &record.public.id)?;
     ensure_absent(&stage, "recovery staging artifact")?;
 
-    if let Err(error) = fs::copy(&recovery_source, &stage) {
-        return Err(format!("Could not stage recovery copy: {error}"));
+    if let Err(error) = durable_fs::copy_new_file(&recovery_source, &stage) {
+        return Err(format!("Could not durably stage recovery copy: {error}"));
     }
-    let staged = (|| -> Result<(), String> {
-        File::open(&stage)
-            .and_then(|file| file.sync_all())
-            .map_err(|error| format!("Could not flush staged recovery copy: {error}"))?;
-        if !file_matches(&stage, &record.original_hash, record.public.size)? {
-            return Err(
-                "Staged recovery content did not match its stored BLAKE3 + size evidence.".into(),
-            );
-        }
-        Ok(())
-    })();
-    if let Err(error) = staged {
+    if !file_matches(&stage, &record.original_hash, record.public.size)? {
         remove_regular_file_best_effort(&stage);
-        return Err(error);
+        return Err(
+            "Staged recovery content did not match its stored BLAKE3 + size evidence.".into(),
+        );
     }
 
     if let Err(error) = ensure_absent(&target, "local recovery destination") {
@@ -342,13 +333,13 @@ fn rollback_recovery_target(target: &Path, record: &RecoveryRecord) -> Result<()
                 .into(),
         );
     }
-    fs::remove_file(target)
+    durable_fs::remove_regular_file(target)
         .map_err(|error| format!("Could not roll back uncommitted recovery target: {error}"))
 }
 
 fn remove_verified_file_best_effort(path: &Path, hash: &str, size: u64) {
     if file_matches(path, hash, size).unwrap_or(false) {
-        let _ = fs::remove_file(path);
+        let _ = durable_fs::remove_regular_file(path);
     }
 }
 
@@ -385,7 +376,7 @@ fn file_modified_at(path: &Path) -> Result<Option<String>, String> {
 fn remove_regular_file_best_effort(path: &Path) {
     if let Ok(metadata) = fs::symlink_metadata(path) {
         if metadata.is_file() && !metadata.file_type().is_symlink() {
-            let _ = fs::remove_file(path);
+            let _ = durable_fs::remove_regular_file(path);
         }
     }
 }
