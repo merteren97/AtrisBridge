@@ -249,7 +249,7 @@ pub fn list_ai_changesets(
     drop(statement);
     drop(connection);
     ids.into_iter()
-        .map(|id| load_stored_changeset(&app, &id).map(|stored| stored.public))
+        .map(|id| load_stored_changeset(app, &id).map(|stored| stored.public))
         .collect()
 }
 
@@ -297,7 +297,6 @@ fn prepare_changeset_inner(
 
             match change.operation {
                 AiChangeOperation::Create => {
-                    ensure_absent(&source, "AI create destination")?;
                     if change.expected_before_hash.is_some() {
                         return Err("Create operations cannot specify expectedBeforeHash.".into());
                     }
@@ -926,7 +925,7 @@ fn restore_recovery_snapshot(
     } else {
         ensure_absent(&target, "AI rollback target")?;
     }
-    if let Err(error) = fs::rename(&stage, target) {
+    if let Err(error) = fs::rename(&stage, &target) {
         let _ = durable_fs::remove_regular_file(&stage);
         return Err(format!("Could not restore AI rollback target: {error}"));
     }
