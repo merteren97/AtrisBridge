@@ -32,6 +32,10 @@ export async function getRemoteMcpRelayStatus(): Promise<RemoteMcpRelayStatus> {
   return invoke<RemoteMcpRelayStatus>("remote_mcp_relay_status");
 }
 
+export async function retryRemoteMcpRelay(): Promise<RemoteMcpRelayStatus> {
+  return invoke<RemoteMcpRelayStatus>("retry_remote_mcp_relay");
+}
+
 export async function listAiPermissions(
   workspaceId: string,
   clientId: string,

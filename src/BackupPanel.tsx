@@ -65,12 +65,14 @@ export default function BackupPanel({
   onError,
 }: BackupPanelProps) {
   const [plan, setPlan] = useState<BackupPlan | null>(null);
-  const [busy, setBusy] = useState<"load" | "prepare" | "execute" | "mode" | null>(null);
+  const [busy, setBusy] = useState<"load" | "prepare" | "quick" | "mode" | null>(null);
   const [restoreBusy, setRestoreBusy] = useState(false);
   const [continuous, setContinuous] = useState<ContinuousSyncStatus | null>(null);
+  const [feedback, setFeedback] = useState<string | null>(null);
   const continuousEnabled = Boolean(continuous?.enabled);
 
   useEffect(() => {
+    setFeedback(null);
     if (workspace.syncMode !== "two_way") void loadLatest();
   }, [workspace.id, workspace.syncMode, continuousEnabled]);
 
@@ -88,8 +90,16 @@ export default function BackupPanel({
   async function handlePrepare() {
     try {
       setBusy("prepare");
+      setFeedback(null);
       const next = await prepareBackupPlan(workspace.id);
       setPlan(next);
+      setFeedback(
+        next.blockedCount > 0
+          ? `Plan refreshed. ${next.blockedCount} path${next.blockedCount === 1 ? " needs" : "s need"} review before upload.`
+          : next.uploadCount > 0
+            ? `Plan refreshed. ${next.uploadCount} safe upload${next.uploadCount === 1 ? " is" : "s are"} ready for review.`
+            : "Plan refreshed. Google Drive is already up to date for the current evidence.",
+      );
       await onChanged();
     } catch (error) {
       onError(String(error));
@@ -98,17 +108,40 @@ export default function BackupPanel({
     }
   }
 
-  async function handleExecute() {
-    if (!plan || plan.status !== "ready" || plan.uploadCount === 0) return;
-    const confirmed = window.confirm(
-      `Upload ${plan.uploadCount.toLocaleString()} file${plan.uploadCount === 1 ? "" : "s"} (${formatBytes(plan.uploadBytes)}) to ${plan.remotePath}?\n\nAtrisBridge will not delete or download any remote files. Blocked/conflicting paths will remain untouched.`,
-    );
-    if (!confirmed) return;
-
+  async function handleQuickBackup() {
     try {
-      setBusy("execute");
-      await executeBackupPlan(plan.id);
+      setBusy("quick");
+      setFeedback(null);
+      const next = await prepareBackupPlan(workspace.id);
+      setPlan(next);
+      await onChanged();
+
+      if (next.blockedCount > 0) {
+        setFeedback(
+          `Backup plan needs review: ${next.blockedCount} path${next.blockedCount === 1 ? " is" : "s are"} blocked by the current safety policy. Nothing was uploaded.`,
+        );
+        return;
+      }
+      if (next.uploadCount === 0) {
+        setFeedback("Google Drive is already up to date for the current workspace evidence.");
+        return;
+      }
+
+      const confirmed = window.confirm(
+        `Back up ${next.uploadCount.toLocaleString()} file${next.uploadCount === 1 ? "" : "s"} (${formatBytes(next.uploadBytes)}) to ${next.remotePath}?\n\nAtrisBridge just refreshed local and Google Drive evidence. It will upload create/update operations only; remote deletes and downloads are not part of Backup mode.`,
+      );
+      if (!confirmed) {
+        setFeedback("Backup plan is ready. Upload was cancelled before any file was transferred.");
+        return;
+      }
+
+      const report = await executeBackupPlan(next.id);
       setPlan(await getLatestBackupPlan(workspace.id));
+      setFeedback(
+        report.failedCount > 0
+          ? `Backup finished with attention required: ${report.completedCount} completed, ${report.failedCount} failed.`
+          : `Backed up ${report.completedCount} file${report.completedCount === 1 ? "" : "s"} to Google Drive successfully.`,
+      );
       await onChanged();
     } catch (error) {
       onError(String(error));
@@ -125,6 +158,7 @@ export default function BackupPanel({
     if (!confirmed) return;
     try {
       setBusy("mode");
+      setFeedback(null);
       await setWorkspaceSyncMode(workspace.id, "two_way");
       await onChanged();
     } catch (error) {
@@ -170,12 +204,12 @@ export default function BackupPanel({
           <div>
             <div className="backup-plan-title">
               <ListChecks size={17} />
-              <strong>Safe backup plan</strong>
+              <strong>Google Drive backup</strong>
             </div>
             <p>
               {continuousEnabled
-                ? "Watch mode owns plan preparation while active. Pause it before using manual review controls."
-                : "Prepare creates a fresh local + remote evidence snapshot. Uploads only run after a separate review step."}
+                ? "Watch mode owns backup planning while active. With Auto-apply safe transfers off, detected uploads stay pending until you pause watch and run an explicit backup."
+                : "Back up now refreshes local + Drive evidence, shows one confirmation, then uploads only safe create/update operations. Review plan remains available when you want to inspect the exact actions first."}
             </p>
           </div>
           <div className="backup-plan-actions">
@@ -202,35 +236,40 @@ export default function BackupPanel({
               ) : (
                 <ListChecks size={14} />
               )}
-              Prepare plan
+              Review plan
             </button>
             <button
               className="primary-button"
-              onClick={handleExecute}
-              disabled={
-                !ready ||
-                running ||
-                workspace.syncMode !== "backup" ||
-                plan?.status !== "ready" ||
-                plan.uploadCount === 0
-              }
+              onClick={handleQuickBackup}
+              disabled={!ready || running || workspace.syncMode !== "backup"}
+              title="Refresh evidence and upload safe backup changes after one confirmation"
             >
-              {busy === "execute" ? (
+              {busy === "quick" ? (
                 <RefreshCw className="spin" size={14} />
               ) : (
                 <ArrowUpFromLine size={14} />
               )}
-              Run backup
+              Back up now
             </button>
           </div>
         </div>
+
+        {feedback && !continuousEnabled && (
+          <div className="backup-plan-empty">
+            <ShieldCheck size={18} />
+            <div>
+              <strong>Backup status</strong>
+              <span>{feedback}</span>
+            </div>
+          </div>
+        )}
 
         {continuousEnabled ? (
           <div className="backup-plan-empty">
             <ShieldCheck size={18} />
             <div>
               <strong>Watch mode owns this workspace</strong>
-              <span>Pause continuous watch to inspect or execute a plan manually.</span>
+              <span>{continuous?.autoApplySafe ? "Safe backup transfers execute automatically after evidence checks." : "Safe uploads are detected but wait for review. Turn on Auto-apply safe transfers, or pause watch mode and use Back up now."}</span>
             </div>
           </div>
         ) : !ready ? (
@@ -246,7 +285,7 @@ export default function BackupPanel({
             <ShieldCheck size={18} />
             <div>
               <strong>No backup plan prepared</strong>
-              <span>Preparing a plan refreshes both inventories; it does not upload anything.</span>
+              <span>Use Back up now for the normal one-off flow, or Review plan to inspect actions without uploading.</span>
             </div>
           </div>
         ) : (
@@ -312,8 +351,7 @@ export default function BackupPanel({
 
         <div className="backup-safety-strip">
           <ShieldCheck size={13} />
-          Backup mode remains local → Drive only. Enable Two-Way mode explicitly to plan downloads,
-          recoverable deletion propagation, and conflict-aware convergence.
+          Backup mode remains local → Drive only. Back up now never performs remote deletes or downloads; those remain explicit Two-Way/restore workflows.
         </div>
       </section>
 

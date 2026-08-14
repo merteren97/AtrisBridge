@@ -144,6 +144,7 @@ pub fn run() {
             local_mcp_commands::unregister_local_mcp_client,
             local_mcp_commands::test_local_mcp_client_connection,
             remote_mcp_relay::remote_mcp_relay_status,
+            remote_mcp_relay::retry_remote_mcp_relay,
             remote_mcp_relay::list_remote_mcp_clients,
             desktop_shell::set_close_to_tray,
             ai_workspace::ai_file_stat,
