@@ -7,6 +7,33 @@
  * language without fighting the shell.
  */
 
+/* The legacy product stylesheet used a global border-box reset, but the current
+ * product entrypoint no longer imports it. Without this reset fixed-width shell
+ * elements grow by their padding/borders and visibly drift between views. */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* Keep the desktop shell tied to the WebView's actual content box instead of
+ * recalculating against viewport units when Windows chrome/scrollbars change. */
+html,
+body,
+#root,
+.ab-shell,
+.ab-sidebar,
+.ab-main {
+  height: 100%;
+  min-height: 0;
+}
+
+.ab-shell,
+.ab-sidebar,
+.ab-main {
+  max-height: 100%;
+}
+
 /* ProductApp renders topbar + optional notice + scroll surface as direct grid
  * children. When the notice exists, reserve a real row for it instead of
  * letting CSS Grid create an implicit row outside the fixed-height shell. */
@@ -41,10 +68,18 @@
 
 .ab-scroll {
   overflow-x: clip;
+  /* Reserve scrollbar width even when a shorter page is selected. This keeps
+   * the whole content column, titlebar and sidebar edge visually stationary. */
+  scrollbar-gutter: stable;
 }
 
+/* The notice is a sibling of .ab-scroll, so mirror the scroll surface's 28 px
+ * horizontal inset exactly. Using auto width with border-box prevents the old
+ * width + padding overflow visible in the Settings screenshot. */
 .ab-notice {
-  max-width: calc(100% - 56px);
+  width: auto;
+  max-width: none;
+  margin: 14px 28px 0;
 }
 
 .ab-notice > div,
@@ -131,10 +166,21 @@
     gap: 12px;
   }
 
+  /* Anchor navigation scrolls the section below a 50 px sticky rail. The old
+   * 10 px scroll-margin let section copy slide visibly underneath the menu. */
+  .ab-scroll:has(.ab-settings-layout) {
+    scroll-padding-top: 62px;
+  }
+
+  .ab-settings-section {
+    scroll-margin-top: 62px;
+  }
+
   .ab-settings-index {
     position: sticky;
     top: 0;
-    z-index: 10;
+    z-index: 30;
+    isolation: isolate;
     display: flex;
     gap: 4px;
     padding: 6px;
@@ -142,10 +188,23 @@
     overflow-y: hidden;
     border: 1px solid var(--ab-border);
     border-radius: var(--ab-radius-md);
-    background: rgba(12, 16, 23, .96);
-    backdrop-filter: blur(14px);
+    background: #0c1017;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, .32);
+    backdrop-filter: none;
     scrollbar-width: thin;
     scrollbar-color: #2b3440 transparent;
+  }
+
+  /* A solid pseudo-surface prevents sub-pixel text bleed-through while the
+   * WebView composites sticky content during fast wheel/anchor scrolling. */
+  .ab-settings-index::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    background: #0c1017;
+    pointer-events: none;
   }
 
   .ab-settings-index a {
@@ -193,13 +252,23 @@
 
 @media (max-width: 720px) {
   .ab-notice {
-    max-width: calc(100% - 28px);
+    margin: 10px 14px 0;
+    max-width: none;
     grid-template-columns: auto minmax(0, 1fr) auto;
     gap: 9px;
   }
 
   .ab-settings-index {
     position: static;
+    box-shadow: none;
+  }
+
+  .ab-scroll:has(.ab-settings-layout) {
+    scroll-padding-top: 0;
+  }
+
+  .ab-settings-section {
+    scroll-margin-top: 10px;
   }
 
   .ab-choice-grid.two,
