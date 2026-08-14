@@ -1,6 +1,6 @@
 use std::{
     fs::{self, File, OpenOptions},
-    io::{self, Read, Write},
+    io::{self, Write},
     path::Path,
 };
 
@@ -25,17 +25,20 @@ pub fn copy_new_file(source: &Path, destination: &Path) -> io::Result<u64> {
 
     drop(destination_file);
 
-    if let Err(error) = result {
-        let _ = remove_regular_file(destination);
-        return Err(error);
-    }
+    let copied = match result {
+        Ok(copied) => copied,
+        Err(error) => {
+            let _ = remove_regular_file(destination);
+            return Err(error);
+        }
+    };
 
     if let Err(error) = fs::set_permissions(destination, source_permissions) {
         let _ = remove_regular_file(destination);
         return Err(error);
     }
 
-    result
+    Ok(copied)
 }
 
 /// Removes an AtrisBridge-owned regular file without following symlinks.
