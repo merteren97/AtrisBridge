@@ -689,7 +689,13 @@ fn prepare_recovery_snapshots(
             return Err(error);
         }
 
-        let connection = open_changeset_database(app)?;
+        let connection = match open_changeset_database(app) {
+            Ok(connection) => connection,
+            Err(error) => {
+                let _ = durable_fs::remove_regular_file(&recovery);
+                return Err(error);
+            }
+        };
         if let Err(error) = connection.execute(
             "UPDATE ai_changeset_items SET recovery_path = ?1 WHERE id = ?2",
             params![recovery.to_string_lossy().to_string(), item.public.id],
@@ -869,9 +875,8 @@ fn cleanup_stage_artifact(target: &Path, item: &StoredChangesetItem) -> Result<(
         return Ok(());
     };
     if file_matches(&stage, after_size, after_hash)? {
-        durable_fs::remove_regular_file(&stage).map_err(|error| {
-            format!("Could not clean interrupted AI staging artifact: {error}")
-        })?;
+        durable_fs::remove_regular_file(&stage)
+            .map_err(|error| format!("Could not clean interrupted AI staging artifact: {error}"))?;
     }
     Ok(())
 }
@@ -921,7 +926,7 @@ fn restore_recovery_snapshot(
     } else {
         ensure_absent(&target, "AI rollback target")?;
     }
-    if let Err(error) = fs::rename(&stage, &target) {
+    if let Err(error) = fs::rename(&stage, target) {
         let _ = durable_fs::remove_regular_file(&stage);
         return Err(format!("Could not restore AI rollback target: {error}"));
     }
