@@ -1,0 +1,221 @@
+/*
+ * Product-shell layout guardrails.
+ *
+ * Keep this file last in the stylesheet chain. It intentionally contains only
+ * structural overrides for viewport pressure, transient notices and dense
+ * Settings/AI Gateway surfaces so feature styles can keep their own visual
+ * language without fighting the shell.
+ */
+
+/* ProductApp renders topbar + optional notice + scroll surface as direct grid
+ * children. When the notice exists, reserve a real row for it instead of
+ * letting CSS Grid create an implicit row outside the fixed-height shell. */
+.ab-main:has(> .ab-notice) {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.ab-main:has(> .ab-notice) > .ab-notice {
+  grid-row: 2;
+}
+
+.ab-main:has(> .ab-notice) > .ab-scroll {
+  grid-row: 3;
+  min-height: 0;
+}
+
+.ab-main,
+.ab-scroll,
+.ab-view,
+.ab-notice,
+.ab-settings-layout,
+.ab-settings-sheet,
+.ab-settings-sheet-refined,
+.ab-settings-section,
+.ai-gateway-section,
+.ai-remote-section,
+.ai-permission-surface,
+.ai-policy-summary,
+.ai-capability-row {
+  min-width: 0;
+}
+
+.ab-scroll {
+  overflow-x: clip;
+}
+
+.ab-notice {
+  max-width: calc(100% - 56px);
+}
+
+.ab-notice > div,
+.ab-notice p,
+.ab-notice details,
+.ab-notice code {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.ab-notice code {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Dense settings rows must be allowed to shrink instead of forcing the sheet
+ * wider than its grid column. */
+.ab-settings-sheet > *,
+.ab-settings-section > *,
+.ab-setting-row > *,
+.ab-settings-actions,
+.ab-runtime-copy,
+.ab-runtime-copy > div {
+  min-width: 0;
+}
+
+.ab-settings-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* Remote MCP status/action controls were previously competing with the title
+ * for one rigid row. Let them wrap as one cohesive action group. */
+.ai-remote-heading > div:last-child {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+}
+
+.ai-client-footer {
+  min-width: 0;
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+
+.ai-client-footer > code {
+  min-width: 0;
+  flex: 1 1 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-client-footer > div {
+  min-width: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.ai-policy-summary > div,
+.ai-remote-identity,
+.ai-client-copy,
+.ai-capability-copy {
+  min-width: 0;
+}
+
+.ai-remote-identity code,
+.ai-policy-summary strong,
+.ai-capability-copy p,
+.ai-capability-copy small {
+  overflow-wrap: anywhere;
+}
+
+/* A 1280-ish desktop window has only ~1000 px left after the product sidebar.
+ * At that size the permanent Settings index made the AI gateway unnecessarily
+ * narrow. Switch to a compact horizontal category rail before content starts
+ * wrapping into itself. */
+@media (max-width: 1360px) {
+  .ab-settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .ab-settings-index {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    display: flex;
+    gap: 4px;
+    padding: 6px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border: 1px solid var(--ab-border);
+    border-radius: var(--ab-radius-md);
+    background: rgba(12, 16, 23, .96);
+    backdrop-filter: blur(14px);
+    scrollbar-width: thin;
+    scrollbar-color: #2b3440 transparent;
+  }
+
+  .ab-settings-index a {
+    flex: 0 0 auto;
+  }
+}
+
+@media (max-width: 980px) {
+  .ab-settings-section-heading-row,
+  .ai-gateway-heading,
+  .ai-remote-heading,
+  .ai-permission-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .ab-settings-section-heading-row .ab-update-badges,
+  .ai-gateway-heading > .button,
+  .ai-remote-heading > div:last-child {
+    align-self: flex-start;
+  }
+
+  .ai-remote-heading > div:last-child {
+    justify-content: flex-start;
+  }
+
+  .ab-setting-row.connection {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .ab-setting-row.connection > .ab-settings-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+
+  .ai-client-footer > code {
+    flex-basis: 100%;
+  }
+
+  .ai-client-footer > div {
+    width: 100%;
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 720px) {
+  .ab-notice {
+    max-width: calc(100% - 28px);
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 9px;
+  }
+
+  .ab-settings-index {
+    position: static;
+  }
+
+  .ab-choice-grid.two,
+  .ai-client-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ai-remote-section,
+  .ai-permission-surface {
+    margin-left: 12px;
+    margin-right: 12px;
+  }
+
+  .ai-gateway-heading,
+  .ai-permission-header {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+}
