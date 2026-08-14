@@ -14,6 +14,7 @@ mod continuous;
 mod continuous_commands;
 mod database;
 mod desktop_shell;
+mod durable_fs;
 mod encryption;
 mod google_drive_identity;
 mod local_mcp_clients;

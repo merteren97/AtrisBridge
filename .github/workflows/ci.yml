@@ -164,6 +164,9 @@ jobs:
         run: node .github/scripts/create-package-build-config.mjs src-tauri/tauri.package.conf.json
       - name: Check release-mode native runtime
         run: cargo check --locked --release --manifest-path src-tauri/Cargo.toml --target "${{ matrix.rustTarget }}"
+      - name: Run Windows durable filesystem regression
+        if: startsWith(matrix.os, 'windows')
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib durable_fs::tests
       - name: Build representative package
         run: npm run tauri -- build --target "${{ matrix.rustTarget }}" --bundles "${{ matrix.smokeBundle }}" --config src-tauri/tauri.package.conf.json
       - name: Verify package output
