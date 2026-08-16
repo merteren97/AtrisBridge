@@ -1591,14 +1591,20 @@ mod tests {
         fs::create_dir_all(root.join("src/App")).expect("create source tree");
         fs::create_dir_all(root.join("src/App/obj")).expect("create obj tree");
         fs::write(root.join("src/App/App.csproj"), "<Project />").expect("write project");
-        fs::write(root.join("Product.sln"), "Microsoft Visual Studio Solution File").expect("write solution");
+        fs::write(
+            root.join("Product.sln"),
+            "Microsoft Visual Studio Solution File",
+        )
+        .expect("write solution");
         fs::write(root.join("src/App/obj/Generated.csproj"), "<Project />")
             .expect("write ignored generated project");
 
         let targets = discover_dotnet_targets(&root).expect("discover .NET targets");
         assert_eq!(targets.first().map(String::as_str), Some("Product.sln"));
         assert!(targets.iter().any(|target| target == "src/App/App.csproj"));
-        assert!(!targets.iter().any(|target| target.contains("Generated.csproj")));
+        assert!(!targets
+            .iter()
+            .any(|target| target.contains("Generated.csproj")));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1608,7 +1614,10 @@ mod tests {
         fs::create_dir_all(&root).expect("create root");
         fs::write(root.join("App.slnx"), "<Solution />").expect("write solution");
         let profiles = detect_profiles(&root).expect("detect profiles");
-        let ids = profiles.iter().map(|profile| profile.id).collect::<Vec<_>>();
+        let ids = profiles
+            .iter()
+            .map(|profile| profile.id)
+            .collect::<Vec<_>>();
         assert!(ids.contains(&"dotnet.build.debug"));
         assert!(ids.contains(&"dotnet.build.debug.x64"));
         assert!(ids.contains(&"dotnet.build.release"));
