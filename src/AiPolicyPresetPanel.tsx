@@ -154,7 +154,7 @@ export default function AiPolicyPresetPanel({ workspaces, onError }: AiPolicyPre
   }
 
   return (
-    <section className="ai-bulk-policy" aria-labelledby="ai-bulk-policy-title">
+    <section className="ai-gateway-section ai-bulk-policy" aria-labelledby="ai-bulk-policy-title">
       <header className="ai-bulk-policy-heading">
         <div>
           <span className="section-kicker">Permission UX v2</span>
