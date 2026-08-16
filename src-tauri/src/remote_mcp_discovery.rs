@@ -98,18 +98,27 @@ pub async fn list_remote_mcp_grant_clients(
 fn valid_remote_principal(value: &str) -> bool {
     value.starts_with("mcp.remote.")
         && value.len() <= MAX_PRINCIPAL_BYTES
-        && value.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
-        })
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
 fn bounded_display_name(value: &str) -> String {
     let normalized = value
         .chars()
-        .map(|character| if matches!(character, '\r' | '\n' | '\t') { ' ' } else { character })
+        .map(|character| {
+            if matches!(character, '\r' | '\n' | '\t') {
+                ' '
+            } else {
+                character
+            }
+        })
         .collect::<String>();
     let compact = normalized.split_whitespace().collect::<Vec<_>>().join(" ");
-    let bounded = compact.chars().take(MAX_DISPLAY_NAME_CHARS).collect::<String>();
+    let bounded = compact
+        .chars()
+        .take(MAX_DISPLAY_NAME_CHARS)
+        .collect::<String>();
     if bounded.is_empty() {
         "Remote MCP client".into()
     } else {
@@ -142,7 +151,10 @@ mod tests {
 
     #[test]
     fn display_names_are_compacted_and_bounded() {
-        assert_eq!(bounded_display_name("  ChatGPT\n  Desktop  "), "ChatGPT Desktop");
+        assert_eq!(
+            bounded_display_name("  ChatGPT\n  Desktop  "),
+            "ChatGPT Desktop"
+        );
         assert_eq!(bounded_display_name("\n\t"), "Remote MCP client");
         assert!(bounded_display_name(&"x".repeat(400)).chars().count() <= MAX_DISPLAY_NAME_CHARS);
     }
