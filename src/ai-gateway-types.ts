@@ -23,11 +23,19 @@ export interface LocalMcpClientStatus {
   detail: string;
 }
 
+export interface RemoteMcpGrantClient {
+  principal: string;
+  displayName: string;
+  activeOnThisDevice: boolean;
+}
+
 export interface RemoteMcpClientRecord {
   principal: string;
   displayName: string;
   firstSeenAt: string;
   lastSeenAt: string;
+  observed?: boolean;
+  activeOnThisDevice?: boolean;
 }
 
 export type RemoteMcpRelayState = "signed_out" | "connecting" | "online" | "reconnecting";

@@ -27,6 +27,7 @@ mod models;
 mod provider_sessions;
 mod provider_storage;
 mod remote_mcp_adapter;
+mod remote_mcp_discovery;
 mod remote_mcp_protocol;
 mod remote_mcp_relay;
 mod remote_mcp_request;
@@ -166,6 +167,7 @@ pub fn run() {
             remote_mcp_relay::remote_mcp_relay_status,
             remote_mcp_relay::retry_remote_mcp_relay,
             remote_mcp_relay::list_remote_mcp_clients,
+            remote_mcp_discovery::list_remote_mcp_grant_clients,
             desktop_shell::set_close_to_tray,
             ai_workspace::ai_file_stat,
             ai_workspace::ai_read_text_file,

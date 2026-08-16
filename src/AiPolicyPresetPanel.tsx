@@ -1,5 +1,20 @@
 import { useEffect, useMemo, useState } from "react";
-import { Bot, Check, ChevronDown, Code2, Eye, RefreshCw, ShieldCheck, Sparkles } from "lucide-react";
+import {
+  Bot,
+  Check,
+  ChevronDown,
+  ChevronUp,
+  Code2,
+  Eye,
+  KeyRound,
+  Link2,
+  RefreshCw,
+  ShieldAlert,
+  ShieldCheck,
+  SlidersHorizontal,
+  Sparkles,
+  TerminalSquare,
+} from "lucide-react";
 import type { AiPermissionRule, LocalMcpClientStatus, RemoteMcpClientRecord } from "./ai-gateway-types";
 import { listLocalMcpClients, listRemoteMcpClients, setAiPermission } from "./lib/ai-gateway";
 import type { Workspace } from "./types";
@@ -17,20 +32,69 @@ interface PolicyClient {
 }
 
 type PolicyPreset = "read-only" | "developer" | "full";
+type CapabilityRisk = "destructive" | "open-world" | "sensitive";
 
-const CAPABILITIES = [
-  "workspace.read",
-  "workspace.edit",
-  "workspace.delete",
-  "command.execute",
-  "git.local",
-  "git.remote",
-  "sync.read",
-  "sync.execute",
-  "sync.destructive",
-  "sensitive.read",
-  "sensitive.write",
-] as const;
+interface CapabilityDefinition {
+  id: string;
+  label: string;
+  description: string;
+  risk?: CapabilityRisk;
+}
+
+interface CapabilityGroup {
+  label: string;
+  icon: "workspace" | "git" | "command" | "sync" | "sensitive";
+  capabilities: CapabilityDefinition[];
+}
+
+const CAPABILITY_GROUPS: CapabilityGroup[] = [
+  {
+    label: "Workspace",
+    icon: "workspace",
+    capabilities: [
+      { id: "workspace.read", label: "Read files", description: "Inspect metadata, search text and read workspace files." },
+      { id: "workspace.edit", label: "Edit files", description: "Prepare and apply reviewed multi-file changesets." },
+      { id: "workspace.delete", label: "Delete files", description: "Allow changesets that remove workspace files.", risk: "destructive" },
+    ],
+  },
+  {
+    label: "Git",
+    icon: "git",
+    capabilities: [
+      { id: "git.local", label: "Local Git", description: "Inspect diffs, stage, commit and use local worktrees." },
+      { id: "git.remote", label: "Remote Git", description: "Push commits to configured Git remotes.", risk: "open-world" },
+    ],
+  },
+  {
+    label: "Commands",
+    icon: "command",
+    capabilities: [
+      { id: "command.execute", label: "Run project tasks", description: "Run AtrisBridge-approved build, test, lint and check profiles." },
+    ],
+  },
+  {
+    label: "Synchronization",
+    icon: "sync",
+    capabilities: [
+      { id: "sync.read", label: "Inspect sync state", description: "Read remote mappings, plans and synchronization evidence." },
+      { id: "sync.execute", label: "Execute safe sync", description: "Run approved synchronization operations." },
+      { id: "sync.destructive", label: "Destructive sync", description: "Permit remote trash or local-delete synchronization actions.", risk: "destructive" },
+    ],
+  },
+  {
+    label: "Sensitive files",
+    icon: "sensitive",
+    capabilities: [
+      { id: "sensitive.read", label: "Read sensitive files", description: "Read files matched by the sensitive-file policy.", risk: "sensitive" },
+      { id: "sensitive.write", label: "Write sensitive files", description: "Modify files matched by the sensitive-file policy.", risk: "sensitive" },
+    ],
+  },
+];
+
+const CAPABILITIES = CAPABILITY_GROUPS.flatMap((group) => group.capabilities);
+const HIGH_RISK_CAPABILITIES = new Set(
+  CAPABILITIES.filter((capability) => capability.risk).map((capability) => capability.id),
+);
 
 const PRESETS: Array<{
   id: PolicyPreset;
@@ -41,13 +105,13 @@ const PRESETS: Array<{
   {
     id: "read-only",
     title: "Read Only",
-    description: "Read workspace files and inspect synchronization state. All mutation capabilities are denied.",
+    description: "Read workspace files and inspect synchronization state. Mutation capabilities are denied.",
     icon: Eye,
   },
   {
     id: "developer",
     title: "Developer",
-    description: "Read/edit files, run approved project tasks and use local Git. Risky/destructive capabilities remain Ask.",
+    description: "Read/edit files, run approved project tasks and use local Git. Risky capabilities stay on Ask.",
     icon: Code2,
   },
   {
@@ -69,13 +133,35 @@ function presetRule(preset: PolicyPreset, capability: string): AiPermissionRule 
   return "ask";
 }
 
+function rulesForPreset(preset: PolicyPreset): Record<string, AiPermissionRule> {
+  return Object.fromEntries(CAPABILITIES.map((capability) => [capability.id, presetRule(preset, capability.id)]));
+}
+
+function groupIcon(icon: CapabilityGroup["icon"]) {
+  if (icon === "git") return <Code2 size={15} />;
+  if (icon === "command") return <TerminalSquare size={15} />;
+  if (icon === "sync") return <Link2 size={15} />;
+  if (icon === "sensitive") return <KeyRound size={15} />;
+  return <Bot size={15} />;
+}
+
+function riskLabel(risk: CapabilityRisk | undefined) {
+  if (risk === "destructive") return "Destructive";
+  if (risk === "open-world") return "External write";
+  if (risk === "sensitive") return "Sensitive";
+  return null;
+}
+
 export default function AiPolicyPresetPanel({ workspaces, onError }: AiPolicyPresetPanelProps) {
   const [localClients, setLocalClients] = useState<LocalMcpClientStatus[]>([]);
   const [remoteClients, setRemoteClients] = useState<RemoteMcpClientRecord[]>([]);
   const [principal, setPrincipal] = useState("");
   const [workspaceIds, setWorkspaceIds] = useState<string[]>(workspaces[0] ? [workspaces[0].id] : []);
-  const [busy, setBusy] = useState<PolicyPreset | "refresh" | null>(null);
-  const [lastApplied, setLastApplied] = useState<PolicyPreset | null>(null);
+  const [busy, setBusy] = useState<PolicyPreset | "custom" | "refresh" | null>(null);
+  const [selectedPreset, setSelectedPreset] = useState<PolicyPreset | null>(null);
+  const [lastApplied, setLastApplied] = useState<PolicyPreset | "custom" | null>(null);
+  const [customizing, setCustomizing] = useState(false);
+  const [customRules, setCustomRules] = useState<Record<string, AiPermissionRule>>({});
 
   const clients = useMemo<PolicyClient[]>(() => [
     ...remoteClients.map((client) => ({ principal: client.principal, label: client.displayName, transport: "remote" as const })),
@@ -84,6 +170,17 @@ export default function AiPolicyPresetPanel({ workspaces, onError }: AiPolicyPre
 
   const selectedClient = clients.find((client) => client.principal === principal) ?? null;
   const selectedWorkspaces = workspaces.filter((workspace) => workspaceIds.includes(workspace.id));
+  const selectedPresetInfo = PRESETS.find((preset) => preset.id === selectedPreset) ?? null;
+  const detailRules: Record<string, AiPermissionRule> = selectedPreset ? rulesForPreset(selectedPreset) : {};
+  const activeRules: Record<string, AiPermissionRule> = customizing ? customRules : detailRules;
+  const ruleCounts = CAPABILITIES.reduce(
+    (counts, capability) => {
+      const rule = activeRules[capability.id];
+      if (rule) counts[rule] += 1;
+      return counts;
+    },
+    { allow: 0, ask: 0, deny: 0 } as Record<AiPermissionRule, number>,
+  );
 
   useEffect(() => {
     void refreshClients();
@@ -119,33 +216,60 @@ export default function AiPolicyPresetPanel({ workspaces, onError }: AiPolicyPre
       : [...current, id]);
   }
 
-  function selectAllWorkspaces() {
+  function toggleAllWorkspaces() {
+    if (workspaceIds.length === workspaces.length) {
+      setWorkspaceIds([]);
+      return;
+    }
     setWorkspaceIds(workspaces.map((workspace) => workspace.id));
   }
 
-  async function applyPreset(preset: PolicyPreset) {
+  function openPreset(preset: PolicyPreset) {
+    if (selectedPreset === preset && !customizing) {
+      setSelectedPreset(null);
+      return;
+    }
+    setSelectedPreset(preset);
+    setCustomizing(false);
+    setCustomRules(rulesForPreset(preset));
+  }
+
+  function startCustomize() {
+    if (!selectedPreset) return;
+    setCustomRules(rulesForPreset(selectedPreset));
+    setCustomizing(true);
+  }
+
+  async function applyRules(
+    rules: Record<string, AiPermissionRule>,
+    label: string,
+    busyState: PolicyPreset | "custom",
+  ) {
     if (!selectedClient || selectedWorkspaces.length === 0) return;
-    if (preset === "full") {
+    const highRiskAllowed = CAPABILITIES.some(
+      (capability) => HIGH_RISK_CAPABILITIES.has(capability.id) && rules[capability.id] === "allow",
+    );
+    if (highRiskAllowed) {
       const names = selectedWorkspaces.map((workspace) => workspace.name).join(", ");
       const confirmed = window.confirm(
-        `Grant Full Access to ${selectedClient.label} for ${selectedWorkspaces.length} workspace(s)?\n\n${names}\n\nThis allows file deletion, sensitive-file read/write, command execution, Git push and destructive synchronization in every selected workspace.`,
+        `Apply ${label} to ${selectedClient.label} for ${selectedWorkspaces.length} workspace(s)?\n\n${names}\n\nThis selection allows one or more high-risk capabilities such as deletion, remote Git writes, sensitive files or destructive synchronization.`,
       );
       if (!confirmed) return;
     }
 
     try {
-      setBusy(preset);
+      setBusy(busyState);
       for (const workspace of selectedWorkspaces) {
         for (const capability of CAPABILITIES) {
           await setAiPermission(
             workspace.id,
             selectedClient.principal,
-            capability,
-            presetRule(preset, capability),
+            capability.id,
+            rules[capability.id] ?? "ask",
           );
         }
       }
-      setLastApplied(preset);
+      setLastApplied(busyState);
     } catch (error) {
       onError(String(error));
     } finally {
@@ -153,13 +277,21 @@ export default function AiPolicyPresetPanel({ workspaces, onError }: AiPolicyPre
     }
   }
 
+  async function applyPreset(preset: PolicyPreset) {
+    await applyRules(rulesForPreset(preset), PRESETS.find((item) => item.id === preset)?.title ?? preset, preset);
+  }
+
+  async function applyCustom() {
+    await applyRules(customRules, "Custom policy", "custom");
+  }
+
   return (
     <section className="ai-gateway-section ai-bulk-policy" aria-labelledby="ai-bulk-policy-title">
       <header className="ai-bulk-policy-heading">
         <div>
-          <span className="section-kicker">Permission UX v2</span>
-          <h3 id="ai-bulk-policy-title">Policy presets &amp; workspace scope</h3>
-          <p>Apply a predictable capability baseline to one or several workspaces without granting permissions globally.</p>
+          <span className="section-kicker">AI client permissions</span>
+          <h3 id="ai-bulk-policy-title">Presets, workspace scope &amp; custom capabilities</h3>
+          <p>Choose a client and one or more workspaces, review a preset, then apply it as-is or customize individual capabilities in the same place.</p>
         </div>
         <button className="button secondary" type="button" onClick={() => void refreshClients()} disabled={busy !== null}>
           <RefreshCw size={13} className={busy === "refresh" ? "spin" : ""} /> Refresh clients
@@ -171,12 +303,12 @@ export default function AiPolicyPresetPanel({ workspaces, onError }: AiPolicyPre
           <span>Client</span>
           <div className="select-wrap">
             <select value={principal} onChange={(event) => setPrincipal(event.target.value)} disabled={clients.length === 0 || busy !== null}>
-              {clients.length === 0 && <option value="">No client available</option>}
-              {remoteClients.length > 0 && (
-                <optgroup label="Remote">
-                  {remoteClients.map((client) => <option key={client.principal} value={client.principal}>{client.displayName}</option>)}
-                </optgroup>
-              )}
+              {clients.length === 0 && <option value="">No authenticated client yet</option>}
+              <optgroup label="Remote">
+                {remoteClients.length === 0
+                  ? <option value="" disabled>ChatGPT — connect with OAuth to configure</option>
+                  : remoteClients.map((client) => <option key={client.principal} value={client.principal}>{client.displayName}</option>)}
+              </optgroup>
               {localClients.length > 0 && (
                 <optgroup label="Local">
                   {localClients.map((client) => <option key={client.principal} value={client.principal}>{client.label}</option>)}
@@ -185,12 +317,19 @@ export default function AiPolicyPresetPanel({ workspaces, onError }: AiPolicyPre
             </select>
             <ChevronDown size={13} />
           </div>
+          <small className="ai-client-discovery-note">
+            {remoteClients.length > 0
+              ? "Remote OAuth identity discovered from AtrisHub; no first tool call is required."
+              : "ChatGPT is supported now, but a secure remote principal is created only after OAuth authorization."}
+          </small>
         </label>
 
         <div className="ai-bulk-workspace-select">
           <div className="ai-bulk-workspace-title">
             <span>Workspaces</span>
-            <button type="button" onClick={selectAllWorkspaces} disabled={workspaces.length === 0 || busy !== null}>Select all</button>
+            <button type="button" onClick={toggleAllWorkspaces} disabled={workspaces.length === 0 || busy !== null}>
+              {workspaceIds.length === workspaces.length && workspaces.length > 0 ? "Clear all" : "Select all"}
+            </button>
           </div>
           <div className="ai-bulk-workspace-grid">
             {workspaces.length === 0 ? (
@@ -212,26 +351,110 @@ export default function AiPolicyPresetPanel({ workspaces, onError }: AiPolicyPre
       <div className="ai-preset-grid">
         {PRESETS.map((preset) => {
           const Icon = preset.icon;
-          const loading = busy === preset.id;
+          const selected = selectedPreset === preset.id;
+          const applied = lastApplied === preset.id;
           return (
             <button
               type="button"
-              className={lastApplied === preset.id ? `ai-preset-card ${preset.id} applied` : `ai-preset-card ${preset.id}`}
+              className={`ai-preset-card ${preset.id}${selected ? " selected" : ""}${applied ? " applied" : ""}`}
               key={preset.id}
-              onClick={() => void applyPreset(preset.id)}
+              onClick={() => openPreset(preset.id)}
               disabled={!selectedClient || selectedWorkspaces.length === 0 || busy !== null}
+              aria-expanded={selected}
             >
               <span className="ai-preset-icon"><Icon size={18} /></span>
               <span className="ai-preset-copy"><strong>{preset.title}</strong><small>{preset.description}</small></span>
-              <span className="ai-preset-action">{loading ? <RefreshCw className="spin" size={13} /> : lastApplied === preset.id ? <Check size={13} /> : <Sparkles size={13} />}</span>
+              <span className="ai-preset-action">
+                {busy === preset.id ? <RefreshCw className="spin" size={13} /> : applied ? <Check size={13} /> : selected ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+              </span>
             </button>
           );
         })}
       </div>
 
+      {selectedPresetInfo && (
+        <div className="ai-policy-detail-panel">
+          <div className="ai-policy-detail-heading">
+            <div>
+              <span className="section-kicker">{customizing ? "Custom policy" : `${selectedPresetInfo.title} details`}</span>
+              <h4>{customizing ? `Customize from ${selectedPresetInfo.title}` : `Review ${selectedPresetInfo.title}`}</h4>
+              <p>{customizing ? "Change any capability before applying. These rules will be written to every selected workspace for this exact client principal." : "Nothing changes until you press Apply. Expand into Customize when the preset is close to what you need but not exact."}</p>
+            </div>
+            <div className="ai-policy-rule-summary" aria-label="Policy rule summary">
+              <span className="allow">{ruleCounts.allow} Allow</span>
+              <span className="ask">{ruleCounts.ask} Ask</span>
+              <span className="deny">{ruleCounts.deny} Deny</span>
+            </div>
+          </div>
+
+          <div className="ai-policy-detail-groups">
+            {CAPABILITY_GROUPS.map((group) => (
+              <section className="ai-policy-detail-group" key={group.label}>
+                <header><span>{groupIcon(group.icon)}</span><strong>{group.label}</strong></header>
+                {group.capabilities.map((capability) => {
+                  const rule = activeRules[capability.id] ?? "ask";
+                  const risk = riskLabel(capability.risk);
+                  return (
+                    <div className={`ai-policy-detail-row ${capability.risk ? `risk-${capability.risk}` : ""}`} key={capability.id}>
+                      <div className="ai-policy-detail-copy">
+                        <div><strong>{capability.label}</strong>{risk && <span className={`ai-risk-mini ${capability.risk}`}><ShieldAlert size={10} /> {risk}</span>}</div>
+                        <p>{capability.description}</p>
+                      </div>
+                      {customizing ? (
+                        <div className="ai-custom-rule-segment" aria-label={`${capability.label} permission`}>
+                          {(["deny", "ask", "allow"] as AiPermissionRule[]).map((option) => (
+                            <button
+                              key={option}
+                              type="button"
+                              className={rule === option ? `active ${option}` : ""}
+                              onClick={() => setCustomRules((current) => ({ ...current, [capability.id]: option }))}
+                              disabled={busy !== null}
+                            >
+                              {option === "deny" ? "Deny" : option === "ask" ? "Ask" : "Allow"}
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className={`ai-rule-pill ${rule}`}>{rule === "allow" ? "Allow" : rule === "deny" ? "Deny" : "Ask"}</span>
+                      )}
+                    </div>
+                  );
+                })}
+              </section>
+            ))}
+          </div>
+
+          <div className="ai-policy-detail-actions">
+            <div>
+              <strong>{selectedClient?.label}</strong>
+              <span>{selectedWorkspaces.length} workspace(s) selected</span>
+            </div>
+            <div>
+              {customizing ? (
+                <>
+                  <button className="button secondary" type="button" onClick={() => setCustomizing(false)} disabled={busy !== null}>Back to preset</button>
+                  <button className="button primary" type="button" onClick={() => void applyCustom()} disabled={busy !== null}>
+                    {busy === "custom" ? <RefreshCw className="spin" size={13} /> : <SlidersHorizontal size={13} />}
+                    Apply custom
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button className="button secondary" type="button" onClick={startCustomize} disabled={busy !== null}><SlidersHorizontal size={13} /> Customize</button>
+                  <button className="button primary" type="button" onClick={() => void applyPreset(selectedPresetInfo.id)} disabled={busy !== null}>
+                    {busy === selectedPresetInfo.id ? <RefreshCw className="spin" size={13} /> : <Sparkles size={13} />}
+                    Apply {selectedPresetInfo.title}
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="ai-bulk-policy-note">
         <Bot size={14} />
-        <p><strong>{selectedClient?.label ?? "Select a client"}</strong>{selectedWorkspaces.length > 0 ? ` · ${selectedWorkspaces.length} workspace(s) selected.` : " · Select at least one workspace."} Individual Deny / Ask / Allow controls above remain the source of truth and can override a preset afterward.</p>
+        <p><strong>{selectedClient?.label ?? "Select an authenticated client"}</strong>{selectedWorkspaces.length > 0 ? ` · ${selectedWorkspaces.length} workspace(s) selected.` : " · Select at least one workspace."} Presets and custom rules now share the same per-client, per-workspace permission authority.</p>
       </div>
     </section>
   );
