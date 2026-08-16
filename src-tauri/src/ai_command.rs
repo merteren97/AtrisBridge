@@ -33,6 +33,8 @@ use crate::{
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_COMMAND_STDOUT_BYTES: usize = 256 * 1024;
 const MAX_COMMAND_STDERR_BYTES: usize = 256 * 1024;
+const MAX_PROJECT_SCAN_ENTRIES: usize = 10_000;
+const MAX_PROJECT_SCAN_DEPTH: usize = 6;
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(40);
 const OUTPUT_DRAIN_GRACE: Duration = Duration::from_secs(2);
 const PIPE_CHANNEL_CAPACITY: usize = 32;
@@ -149,8 +151,6 @@ pub(crate) fn inspect_ai_command_profiles(
     coordinator: &WorkspaceMutationCoordinator,
 ) -> Result<Vec<AiCommandProfile>, String> {
     let session = ai_gateway::authorize_session(app, session_id, "command.execute")?;
-    require_isolated_session(&session)?;
-    ai_gateway::authorize_session(app, session_id, "git.local")?;
     let workspace = find_workspace(app, &session.workspace_id)?;
     let primary_root = canonical_workspace_root(&workspace.local_path)?;
     let root = ai_git::session_workspace_root(app, &session, coordinator)?;
@@ -198,8 +198,6 @@ fn run_ai_command_blocking(
     let session = ai_gateway::authorize_session(&app, &session_id, "command.execute")?;
     let run_id = Uuid::new_v4().to_string();
     let result = (|| {
-        require_isolated_session(&session)?;
-        ai_gateway::authorize_session(&app, &session_id, "git.local")?;
         validate_profile_id(&profile_id)?;
 
         let workspace = find_workspace(&app, &session.workspace_id)?;
@@ -217,7 +215,7 @@ fn run_ai_command_blocking(
         let executable =
             resolve_executable(&spec.tool, &root, &primary_root)?.ok_or_else(|| {
                 format!(
-                    "Required tool '{}' was not found in a trusted PATH location.",
+                    "Required tool '{}' was not found in a trusted system/toolchain location.",
                     spec.tool
                 )
             })?;
@@ -271,7 +269,7 @@ fn run_ai_command_blocking(
             workspace_dirty_after,
             runtime_cleanup_incomplete,
             output_capture_incomplete: output.output_capture_incomplete,
-            execution_policy: "isolated_worktree_fixed_profile_credential_minimized",
+            execution_policy: execution_policy(&session),
         })
     })();
     record_command_result(
@@ -283,6 +281,14 @@ fn run_ai_command_blocking(
         cancellation_requested(cancel),
     )?;
     result
+}
+
+fn execution_policy(session: &AiSession) -> &'static str {
+    if session.mode == "direct" {
+        "direct_workspace_fixed_profile_credential_minimized"
+    } else {
+        "isolated_worktree_fixed_profile_credential_minimized"
+    }
 }
 
 fn public_profile(spec: CommandProfileSpec, root: &Path, primary_root: &Path) -> AiCommandProfile {
@@ -304,7 +310,7 @@ fn public_profile(spec: CommandProfileSpec, root: &Path, primary_root: &Path) ->
         command_preview: preview,
         timeout_seconds: spec.timeout.as_secs(),
         available,
-        execution_policy: "isolated_worktree_fixed_profile_credential_minimized",
+        execution_policy: "fixed_profile_credential_minimized",
     }
 }
 
@@ -437,26 +443,207 @@ fn detect_dotnet_profiles(
     root: &Path,
     profiles: &mut Vec<CommandProfileSpec>,
 ) -> Result<(), String> {
-    if !has_root_project_with_extensions(root, &["sln", "slnx", "csproj", "fsproj", "vbproj"])? {
+    let targets = discover_dotnet_targets(root)?;
+    let Some(target) = preferred_dotnet_target(&targets) else {
         return Ok(());
+    };
+
+    for (id, label, configuration, platform) in [
+        ("dotnet.build.debug", "dotnet build Debug", "Debug", None),
+        (
+            "dotnet.build.debug.x64",
+            "dotnet build Debug x64",
+            "Debug",
+            Some("x64"),
+        ),
+        (
+            "dotnet.build.release",
+            "dotnet build Release",
+            "Release",
+            None,
+        ),
+        (
+            "dotnet.build.release.x64",
+            "dotnet build Release x64",
+            "Release",
+            Some("x64"),
+        ),
+    ] {
+        profiles.push(CommandProfileSpec {
+            id,
+            label,
+            ecosystem: "dotnet",
+            tool: "dotnet".into(),
+            args: dotnet_build_args(&target, configuration, platform),
+            timeout: bounded_timeout(15 * 60),
+        });
     }
-    profiles.push(CommandProfileSpec {
-        id: "dotnet.build",
-        label: "dotnet build",
-        ecosystem: "dotnet",
-        tool: "dotnet".into(),
-        args: vec!["build".into(), "--nologo".into()],
-        timeout: bounded_timeout(10 * 60),
-    });
     profiles.push(CommandProfileSpec {
         id: "dotnet.test",
         label: "dotnet test",
         ecosystem: "dotnet",
         tool: "dotnet".into(),
-        args: vec!["test".into(), "--nologo".into()],
-        timeout: bounded_timeout(10 * 60),
+        args: vec!["test".into(), target.clone(), "--nologo".into()],
+        timeout: bounded_timeout(15 * 60),
     });
+
+    #[cfg(windows)]
+    for (id, label, configuration, platform) in [
+        (
+            "msbuild.build.debug.x64",
+            "MSBuild Debug x64",
+            "Debug",
+            "x64",
+        ),
+        (
+            "msbuild.build.release.x64",
+            "MSBuild Release x64",
+            "Release",
+            "x64",
+        ),
+        (
+            "msbuild.build.debug.anycpu",
+            "MSBuild Debug Any CPU",
+            "Debug",
+            "Any CPU",
+        ),
+        (
+            "msbuild.build.release.anycpu",
+            "MSBuild Release Any CPU",
+            "Release",
+            "Any CPU",
+        ),
+    ] {
+        profiles.push(CommandProfileSpec {
+            id,
+            label,
+            ecosystem: "dotnet",
+            tool: "msbuild".into(),
+            args: msbuild_args(&target, configuration, platform),
+            timeout: bounded_timeout(15 * 60),
+        });
+    }
+
     Ok(())
+}
+
+fn dotnet_build_args(target: &str, configuration: &str, platform: Option<&str>) -> Vec<String> {
+    let mut args = vec![
+        "build".into(),
+        target.to_string(),
+        "--nologo".into(),
+        "--configuration".into(),
+        configuration.to_string(),
+    ];
+    if let Some(platform) = platform {
+        args.push(format!("-p:Platform={platform}"));
+    }
+    args
+}
+
+#[cfg(windows)]
+fn msbuild_args(target: &str, configuration: &str, platform: &str) -> Vec<String> {
+    vec![
+        target.to_string(),
+        "/nologo".into(),
+        "/m".into(),
+        "/restore".into(),
+        format!("/p:Configuration={configuration}"),
+        format!("/p:Platform={platform}"),
+    ]
+}
+
+fn discover_dotnet_targets(root: &Path) -> Result<Vec<String>, String> {
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+    let mut inspected = 0usize;
+    let mut targets = Vec::new();
+
+    while let Some((directory, depth)) = stack.pop() {
+        for entry in fs::read_dir(&directory)
+            .map_err(|error| format!("Could not inspect workspace project files: {error}"))?
+        {
+            if inspected >= MAX_PROJECT_SCAN_ENTRIES {
+                return Err(
+                    "Workspace contains too many entries for bounded .NET project discovery."
+                        .into(),
+                );
+            }
+            inspected += 1;
+            let entry = entry
+                .map_err(|error| format!("Could not inspect workspace project entry: {error}"))?;
+            let file_type = entry.file_type().map_err(|error| {
+                format!("Could not inspect workspace project entry type: {error}")
+            })?;
+            if file_type.is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            if file_type.is_dir() {
+                if depth < MAX_PROJECT_SCAN_DEPTH && !skip_project_directory(&entry.file_name()) {
+                    stack.push((path, depth + 1));
+                }
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            let extension = path
+                .extension()
+                .and_then(OsStr::to_str)
+                .map(str::to_ascii_lowercase);
+            if !extension
+                .as_deref()
+                .map(|value| matches!(value, "sln" | "slnx" | "csproj" | "fsproj" | "vbproj"))
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let relative = path.strip_prefix(root).map_err(|_| {
+                "Discovered .NET project escaped the workspace root unexpectedly.".to_string()
+            })?;
+            targets.push(relative.to_string_lossy().replace('\\', "/"));
+        }
+    }
+
+    targets.sort_by(|left, right| dotnet_target_sort_key(left).cmp(&dotnet_target_sort_key(right)));
+    targets.dedup();
+    Ok(targets)
+}
+
+fn skip_project_directory(name: &OsStr) -> bool {
+    matches!(
+        name.to_string_lossy().to_ascii_lowercase().as_str(),
+        ".git"
+            | ".hg"
+            | ".svn"
+            | ".vs"
+            | ".idea"
+            | "bin"
+            | "obj"
+            | "node_modules"
+            | "target"
+            | ".venv"
+            | "venv"
+    )
+}
+
+fn dotnet_target_sort_key(path: &str) -> (u8, usize, String) {
+    let extension_rank = if path.to_ascii_lowercase().ends_with(".slnx") {
+        0
+    } else if path.to_ascii_lowercase().ends_with(".sln") {
+        1
+    } else {
+        2
+    };
+    (
+        extension_rank,
+        path.matches('/').count(),
+        path.to_ascii_lowercase(),
+    )
+}
+
+fn preferred_dotnet_target(targets: &[String]) -> Option<String> {
+    targets.first().cloned()
 }
 
 fn detect_python_profiles(root: &Path, profiles: &mut Vec<CommandProfileSpec>) {
@@ -498,41 +685,6 @@ fn detect_go_profiles(root: &Path, profiles: &mut Vec<CommandProfileSpec>) {
     });
 }
 
-fn has_root_project_with_extensions(root: &Path, extensions: &[&str]) -> Result<bool, String> {
-    let mut inspected = 0usize;
-    for entry in fs::read_dir(root)
-        .map_err(|error| format!("Could not inspect workspace project files: {error}"))?
-    {
-        if inspected >= 2_000 {
-            return Err(
-                "Workspace root contains too many entries for bounded profile detection.".into(),
-            );
-        }
-        inspected += 1;
-        let entry =
-            entry.map_err(|error| format!("Could not inspect workspace project entry: {error}"))?;
-        let file_type = entry
-            .file_type()
-            .map_err(|error| format!("Could not inspect workspace project entry type: {error}"))?;
-        if !file_type.is_file() {
-            continue;
-        }
-        let path = entry.path();
-        let extension = path
-            .extension()
-            .and_then(OsStr::to_str)
-            .map(str::to_ascii_lowercase);
-        if extension
-            .as_deref()
-            .map(|extension| extensions.iter().any(|value| *value == extension))
-            .unwrap_or(false)
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 fn bounded_timeout(seconds: u64) -> Duration {
     Duration::from_secs(seconds.clamp(MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS))
 }
@@ -550,20 +702,18 @@ pub(crate) fn validate_profile_id(profile_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn require_isolated_session(session: &AiSession) -> Result<(), String> {
-    if session.mode != "isolated_worktree" {
-        return Err(
-            "AI command execution is only available inside an isolated-worktree session.".into(),
-        );
-    }
-    Ok(())
-}
-
 fn resolve_executable(
     tool: &str,
     root: &Path,
     primary_root: &Path,
 ) -> Result<Option<PathBuf>, String> {
+    #[cfg(windows)]
+    if tool == "msbuild" {
+        if let Some(path) = resolve_windows_msbuild(root, primary_root) {
+            return Ok(Some(path));
+        }
+    }
+
     let path = env::var_os("PATH")
         .ok_or_else(|| "PATH is unavailable for command discovery.".to_string())?;
     let mut seen = HashSet::<PathBuf>::new();
@@ -598,6 +748,48 @@ fn resolve_executable(
         }
     }
     Ok(None)
+}
+
+#[cfg(windows)]
+fn resolve_windows_msbuild(root: &Path, primary_root: &Path) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(install) = env::var_os("VSINSTALLDIR") {
+        candidates.push(
+            PathBuf::from(install)
+                .join("MSBuild")
+                .join("Current")
+                .join("Bin")
+                .join("MSBuild.exe"),
+        );
+    }
+    for key in ["ProgramFiles(x86)", "ProgramFiles", "ProgramW6432"] {
+        let Some(base) = env::var_os(key) else {
+            continue;
+        };
+        for edition in ["Enterprise", "Professional", "Community", "BuildTools"] {
+            candidates.push(
+                PathBuf::from(&base)
+                    .join("Microsoft Visual Studio")
+                    .join("2022")
+                    .join(edition)
+                    .join("MSBuild")
+                    .join("Current")
+                    .join("Bin")
+                    .join("MSBuild.exe"),
+            );
+        }
+    }
+    candidates.into_iter().find_map(|candidate| {
+        let candidate = candidate.canonicalize().ok()?;
+        if candidate.is_file()
+            && !candidate.starts_with(root)
+            && !candidate.starts_with(primary_root)
+        {
+            Some(candidate)
+        } else {
+            None
+        }
+    })
 }
 
 #[cfg(unix)]
@@ -812,7 +1004,15 @@ fn configure_environment(
 
 #[cfg(windows)]
 fn preserve_platform_environment(command: &mut Command) {
-    for key in ["SystemRoot", "WINDIR", "PATHEXT", "COMSPEC"] {
+    for key in [
+        "SystemRoot",
+        "WINDIR",
+        "PATHEXT",
+        "COMSPEC",
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+        "ProgramW6432",
+    ] {
         if let Some(value) = env::var_os(key) {
             command.env(key, value);
         }
@@ -829,6 +1029,10 @@ fn preserve_toolchain_environment(command: &mut Command, root: &Path, primary_ro
         "GOROOT",
         "JAVA_HOME",
         "PYENV_ROOT",
+        "VSINSTALLDIR",
+        "WindowsSdkDir",
+        "FrameworkDir",
+        "FrameworkSDKDir",
     ] {
         let Some(value) = env::var_os(key) else {
             continue;
@@ -872,9 +1076,18 @@ fn workspace_dirty(
     primary_root: &Path,
     runtime_root: &Path,
 ) -> Result<bool, String> {
-    let executable = resolve_executable("git", root, primary_root)?.ok_or_else(|| {
-        "Git was not found in a trusted PATH location for command status inspection.".to_string()
-    })?;
+    let git_marker = root.join(".git");
+    let is_git_workspace = fs::symlink_metadata(&git_marker)
+        .map(|metadata| {
+            !metadata.file_type().is_symlink() && (metadata.is_dir() || metadata.is_file())
+        })
+        .unwrap_or(false);
+    if !is_git_workspace {
+        return Ok(false);
+    }
+    let Some(executable) = resolve_executable("git", root, primary_root)? else {
+        return Ok(false);
+    };
     let mut command = Command::new(executable);
     command
         .arg("-c")
@@ -897,7 +1110,7 @@ fn workspace_dirty(
     configure_process_isolation(&mut command);
     let child = command
         .spawn()
-        .map_err(|error| format!("Could not inspect command worktree status: {error}"))?;
+        .map_err(|error| format!("Could not inspect command workspace status: {error}"))?;
     let output = collect_child_output(
         child,
         Duration::from_secs(30),
@@ -909,7 +1122,7 @@ fn workspace_dirty(
         return Err("Git status inspection exceeded the command safety timeout.".into());
     }
     if !output.success || output.output_capture_incomplete {
-        return Err("Could not safely inspect isolated command worktree status.".into());
+        return Err("Could not safely inspect command workspace status.".into());
     }
     if output.stdout_truncated {
         return Err("Git status output exceeded the command safety bound.".into());
@@ -1353,6 +1566,7 @@ mod tests {
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_dir_all(outside);
     }
+
     #[test]
     fn cancellation_signal_is_observed() {
         let signal = AtomicBool::new(false);
@@ -1372,12 +1586,39 @@ mod tests {
     }
 
     #[test]
-    fn root_project_detection_is_bounded_to_known_extensions() {
-        let root = test_root("dotnet");
+    fn dotnet_detection_finds_nested_solution_and_ignores_build_outputs() {
+        let root = test_root("dotnet-nested");
+        fs::create_dir_all(root.join("src/App")).expect("create source tree");
+        fs::create_dir_all(root.join("src/App/obj")).expect("create obj tree");
+        fs::write(root.join("src/App/App.csproj"), "<Project />").expect("write project");
+        fs::write(root.join("Product.sln"), "Microsoft Visual Studio Solution File").expect("write solution");
+        fs::write(root.join("src/App/obj/Generated.csproj"), "<Project />")
+            .expect("write ignored generated project");
+
+        let targets = discover_dotnet_targets(&root).expect("discover .NET targets");
+        assert_eq!(targets.first().map(String::as_str), Some("Product.sln"));
+        assert!(targets.iter().any(|target| target == "src/App/App.csproj"));
+        assert!(!targets.iter().any(|target| target.contains("Generated.csproj")));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dotnet_profiles_offer_configuration_and_x64_builds() {
+        let root = test_root("dotnet-profiles");
         fs::create_dir_all(&root).expect("create root");
-        fs::write(root.join("App.csproj"), "<Project />").expect("write project");
-        assert!(has_root_project_with_extensions(&root, &["csproj"]).expect("detect project"));
-        assert!(!has_root_project_with_extensions(&root, &["sln"]).expect("detect absent solution"));
+        fs::write(root.join("App.slnx"), "<Solution />").expect("write solution");
+        let profiles = detect_profiles(&root).expect("detect profiles");
+        let ids = profiles.iter().map(|profile| profile.id).collect::<Vec<_>>();
+        assert!(ids.contains(&"dotnet.build.debug"));
+        assert!(ids.contains(&"dotnet.build.debug.x64"));
+        assert!(ids.contains(&"dotnet.build.release"));
+        assert!(ids.contains(&"dotnet.build.release.x64"));
+        assert!(ids.contains(&"dotnet.test"));
+        let x64 = profiles
+            .iter()
+            .find(|profile| profile.id == "dotnet.build.debug.x64")
+            .expect("x64 profile");
+        assert!(x64.args.iter().any(|arg| arg == "-p:Platform=x64"));
         let _ = fs::remove_dir_all(root);
     }
 }
