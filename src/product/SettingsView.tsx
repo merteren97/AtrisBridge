@@ -19,6 +19,7 @@ import {
   Unplug,
 } from "lucide-react";
 import AiGatewayPanel from "../AiGatewayPanel";
+import AiPolicyPresetPanel from "../AiPolicyPresetPanel";
 import { activityAlertsEnabled, setActivityAlertsEnabled } from "../activity-preferences";
 import { useUpdater, type UpdateBehavior, type UpdateStatus } from "../UpdateCenter";
 import type { ProductModel } from "./useProductModel";
@@ -125,6 +126,7 @@ export default function SettingsView({ model }: { model: ProductModel }) {
         </section>
 
         <AiGatewayPanel workspaces={model.workspaces} onError={model.setError} />
+        <AiPolicyPresetPanel workspaces={model.workspaces} onError={model.setError} />
 
         <section id="updates" className="ab-settings-section">
           <header className="ab-settings-section-heading-row">
