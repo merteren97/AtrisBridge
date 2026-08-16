@@ -5,6 +5,7 @@ import type {
   LocalMcpClientKind,
   LocalMcpClientStatus,
   RemoteMcpClientRecord,
+  RemoteMcpGrantClient,
   RemoteMcpRelayStatus,
 } from "../ai-gateway-types";
 
@@ -25,7 +26,42 @@ export async function unregisterLocalMcpClient(
 }
 
 export async function listRemoteMcpClients(): Promise<RemoteMcpClientRecord[]> {
-  return invoke<RemoteMcpClientRecord[]>("list_remote_mcp_clients");
+  const observed = await invoke<RemoteMcpClientRecord[]>("list_remote_mcp_clients");
+  let grants: RemoteMcpGrantClient[] = [];
+  try {
+    grants = await invoke<RemoteMcpGrantClient[]>("list_remote_mcp_grant_clients");
+  } catch {
+    grants = [];
+  }
+
+  const clients = new Map<string, RemoteMcpClientRecord>();
+  for (const grant of grants) {
+    clients.set(grant.principal, {
+      principal: grant.principal,
+      displayName: grant.displayName,
+      firstSeenAt: "",
+      lastSeenAt: "",
+      observed: false,
+      activeOnThisDevice: grant.activeOnThisDevice,
+    });
+  }
+  for (const client of observed) {
+    const discovered = clients.get(client.principal);
+    clients.set(client.principal, {
+      ...client,
+      displayName: discovered?.displayName ?? client.displayName,
+      activeOnThisDevice: discovered?.activeOnThisDevice,
+      observed: true,
+    });
+  }
+
+  return [...clients.values()].sort((left, right) => {
+    if (left.activeOnThisDevice !== right.activeOnThisDevice) {
+      return left.activeOnThisDevice === true ? -1 : right.activeOnThisDevice === true ? 1 : 0;
+    }
+    if (left.observed !== right.observed) return left.observed ? -1 : 1;
+    return left.displayName.localeCompare(right.displayName);
+  });
 }
 
 export async function getRemoteMcpRelayStatus(): Promise<RemoteMcpRelayStatus> {
