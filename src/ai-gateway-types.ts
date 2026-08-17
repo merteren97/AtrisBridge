@@ -27,6 +27,8 @@ export interface RemoteMcpGrantClient {
   principal: string;
   displayName: string;
   activeOnThisDevice: boolean;
+  authorizedAt: string | null;
+  updatedAt: string | null;
 }
 
 export interface RemoteMcpClientRecord {
@@ -36,6 +38,8 @@ export interface RemoteMcpClientRecord {
   lastSeenAt: string;
   observed?: boolean;
   activeOnThisDevice?: boolean;
+  authorizedAt?: string | null;
+  authorizationUpdatedAt?: string | null;
 }
 
 export type RemoteMcpRelayState = "signed_out" | "connecting" | "online" | "reconnecting";

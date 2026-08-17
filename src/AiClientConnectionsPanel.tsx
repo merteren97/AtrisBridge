@@ -23,6 +23,7 @@ import {
   listRemoteMcpClients,
   registerLocalMcpClient,
   retryRemoteMcpRelay,
+  revokeRemoteMcpClient,
   unregisterLocalMcpClient,
 } from "./lib/ai-gateway";
 import type { Workspace } from "./types";
@@ -75,11 +76,18 @@ function formatDate(value: string | null | undefined): string {
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
 }
 
+function remoteClientDetail(client: RemoteMcpClientRecord): string {
+  const authorized = client.authorizedAt ? `Authorized ${formatDate(client.authorizedAt)}` : "Authorized in AtrisHub";
+  if (client.observed && client.lastSeenAt) return `${authorized} · last tool request ${formatDate(client.lastSeenAt)}`;
+  return `${authorized} · no tool request observed in this Desktop process`;
+}
+
 export default function AiClientConnectionsPanel({ onError }: AiClientConnectionsPanelProps) {
   const [clients, setClients] = useState<LocalMcpClientStatus[]>([]);
   const [remoteClients, setRemoteClients] = useState<RemoteMcpClientRecord[]>([]);
   const [relayStatus, setRelayStatus] = useState<RemoteMcpRelayStatus | null>(null);
   const [busy, setBusy] = useState<LocalMcpClientKind | "refresh" | "relay" | null>(null);
+  const [remoteBusy, setRemoteBusy] = useState<string | null>(null);
 
   useEffect(() => {
     void refreshClients();
@@ -166,6 +174,23 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
     }
   }
 
+  async function handleRemoteRevoke(client: RemoteMcpClientRecord) {
+    const confirmed = window.confirm(
+      `Revoke the AtrisHub OAuth authorization for ${client.displayName}?\n\n${client.principal}\n\nThis disconnects that exact remote client authorization and invalidates its grant-bound tokens. Local AtrisBridge workspace permission rules remain saved but inactive unless this principal is authorized again.`,
+    );
+    if (!confirmed) return;
+    try {
+      setRemoteBusy(client.principal);
+      await revokeRemoteMcpClient(client.principal);
+      await refreshRemoteSurface(true);
+    } catch (error) {
+      onError(String(error));
+      await refreshRemoteSurface(false);
+    } finally {
+      setRemoteBusy(null);
+    }
+  }
+
   return (
     <section id="ai-clients" className="settings-section ai-gateway-section">
       <div className="settings-heading ai-gateway-heading">
@@ -174,7 +199,7 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
           <h2>ChatGPT and local AI clients</h2>
           <p>Connections establish identity and transport only. Workspace permissions are configured once in the unified policy section below.</p>
         </div>
-        <button className="button secondary" type="button" onClick={() => void refreshClients()} disabled={busy !== null}>
+        <button className="button secondary" type="button" onClick={() => void refreshClients()} disabled={busy !== null || remoteBusy !== null}>
           <RefreshCw size={14} className={busy === "refresh" ? "spin" : ""} /> Refresh
         </button>
       </div>
@@ -184,14 +209,14 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
           <div>
             <span className="section-kicker">ChatGPT / remote MCP</span>
             <h3>ChatGPT through AtrisHub</h3>
-            <p>ChatGPT is always visible as a supported client. Once OAuth is authorized, AtrisBridge discovers its verified remote principal from AtrisHub without waiting for the first tool call.</p>
+            <p>Each row is an OAuth authorization, not an open ChatGPT conversation. AtrisBridge keeps separate principals so permissions never bleed between independently registered clients.</p>
           </div>
           <div>
             <span className={`ai-status-pill ${relayTone(relayStatus)}`}>
               {relayStatus?.state === "online" ? <CheckCircle2 size={11} /> : <Cloud size={11} />}
               {relayLabel(relayStatus)}
             </span>
-            <button className="button secondary" type="button" onClick={() => void handleRelayRetry()} disabled={busy !== null}>
+            <button className="button secondary" type="button" onClick={() => void handleRelayRetry()} disabled={busy !== null || remoteBusy !== null}>
               <RefreshCw size={13} className={busy === "relay" ? "spin" : ""} /> Retry relay
             </button>
           </div>
@@ -208,7 +233,7 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
         <div className="ai-policy-summary">
           <div><small>Last connection attempt</small><strong>{formatDate(relayStatus?.lastAttemptAt)}</strong></div>
           <div><small>Last connected</small><strong>{formatDate(relayStatus?.lastConnectedAt)}</strong></div>
-          <div><small>Known remote clients</small><strong>{remoteClients.length}</strong></div>
+          <div><small>Authorized remote clients</small><strong>{remoteClients.length}</strong></div>
         </div>
 
         {relayStatus?.lastError && (
@@ -225,9 +250,9 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
               <div className="ai-remote-identity">
                 <div><strong>ChatGPT</strong><span>Remote</span></div>
                 <code>Secure principal created after OAuth</code>
-                <small>Not connected yet. The client stays visible, but permissions are not attached to a fake identity.</small>
+                <small>Not authorized yet. The client stays visible, but permissions are not attached to a fake identity.</small>
               </div>
-              <span className="ai-status-pill neutral">Not connected</span>
+              <span className="ai-status-pill neutral">Not authorized</span>
             </div>
           ) : remoteClients.map((client) => (
             <div className="ai-remote-row selected" key={client.principal}>
@@ -235,11 +260,23 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
               <div className="ai-remote-identity">
                 <div><strong>{client.displayName}</strong><span>Remote</span></div>
                 <code>{client.principal}</code>
-                <small>{client.observed ? `Last tool request ${formatDate(client.lastSeenAt)}` : "Authorized in AtrisHub · available before the first tool request"}</small>
+                <small>{remoteClientDetail(client)}</small>
               </div>
-              <span className={`ai-status-pill ${client.activeOnThisDevice === false ? "warning" : "success"}`}>
-                {client.activeOnThisDevice === false ? "Other device" : "Available here"}
-              </span>
+              <div className="ai-remote-actions">
+                <span className={`ai-status-pill ${client.activeOnThisDevice === false ? "warning" : "success"}`}>
+                  {client.activeOnThisDevice === false ? "Routed elsewhere" : "Routed here"}
+                </span>
+                <button
+                  className="icon-action danger"
+                  type="button"
+                  title="Revoke this OAuth authorization"
+                  aria-label={`Revoke ${client.displayName} authorization`}
+                  onClick={() => void handleRemoteRevoke(client)}
+                  disabled={remoteBusy !== null || busy !== null}
+                >
+                  {remoteBusy === client.principal ? <RefreshCw className="spin" size={14} /> : <Trash2 size={14} />}
+                </button>
+              </div>
             </div>
           ))}
         </div>
@@ -273,8 +310,8 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
               <div className="ai-client-footer">
                 <code>{status?.principal ?? `mcp.${kind}`}</code>
                 <div>
-                  {status?.canRemove && <button className="icon-action danger" type="button" title="Remove AtrisBridge registration" aria-label={`Remove ${status.label} registration`} onClick={() => void handleRemove(kind)} disabled={busy !== null}><Trash2 size={14} /></button>}
-                  <button className={status?.registrationHealthy ? "button secondary" : "button primary"} type="button" onClick={() => void handleRegister(kind)} disabled={!status?.canRegister || busy !== null}>
+                  {status?.canRemove && <button className="icon-action danger" type="button" title="Remove AtrisBridge registration" aria-label={`Remove ${status.label} registration`} onClick={() => void handleRemove(kind)} disabled={busy !== null || remoteBusy !== null}><Trash2 size={14} /></button>}
+                  <button className={status?.registrationHealthy ? "button secondary" : "button primary"} type="button" onClick={() => void handleRegister(kind)} disabled={!status?.canRegister || busy !== null || remoteBusy !== null}>
                     {loading ? <RefreshCw className="spin" size={13} /> : status?.registrationHealthy ? <ShieldCheck size={13} /> : <Link2 size={13} />}
                     {status?.registrationHealthy ? "Verify" : status?.registrationState === "update_available" ? "Repair" : "Connect"}
                   </button>

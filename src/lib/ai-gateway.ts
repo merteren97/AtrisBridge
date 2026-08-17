@@ -43,6 +43,8 @@ export async function listRemoteMcpClients(): Promise<RemoteMcpClientRecord[]> {
       lastSeenAt: "",
       observed: false,
       activeOnThisDevice: grant.activeOnThisDevice,
+      authorizedAt: grant.authorizedAt,
+      authorizationUpdatedAt: grant.updatedAt,
     });
   }
   for (const client of observed) {
@@ -51,6 +53,8 @@ export async function listRemoteMcpClients(): Promise<RemoteMcpClientRecord[]> {
       ...client,
       displayName: discovered?.displayName ?? client.displayName,
       activeOnThisDevice: discovered?.activeOnThisDevice,
+      authorizedAt: discovered?.authorizedAt,
+      authorizationUpdatedAt: discovered?.authorizationUpdatedAt,
       observed: true,
     });
   }
@@ -60,8 +64,15 @@ export async function listRemoteMcpClients(): Promise<RemoteMcpClientRecord[]> {
       return left.activeOnThisDevice === true ? -1 : right.activeOnThisDevice === true ? 1 : 0;
     }
     if (left.observed !== right.observed) return left.observed ? -1 : 1;
+    const leftUpdated = left.authorizationUpdatedAt ?? "";
+    const rightUpdated = right.authorizationUpdatedAt ?? "";
+    if (leftUpdated !== rightUpdated) return rightUpdated.localeCompare(leftUpdated);
     return left.displayName.localeCompare(right.displayName);
   });
+}
+
+export async function revokeRemoteMcpClient(principal: string): Promise<boolean> {
+  return invoke<boolean>("revoke_remote_mcp_grant_client", { principal });
 }
 
 export async function getRemoteMcpRelayStatus(): Promise<RemoteMcpRelayStatus> {
