@@ -9,7 +9,6 @@ use crate::atris_auth::{self, AtrisHubAuthState};
 const ACTIVE_DEVICE_URL: &str = "https://atrishub.com/api/mcp/device/v1/active";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_REMOTE_CLIENTS: usize = 50;
-const MAX_PRINCIPAL_BYTES: usize = 160;
 const MAX_DISPLAY_NAME_CHARS: usize = 160;
 
 #[derive(Debug, Deserialize)]
@@ -146,11 +145,10 @@ fn discovery_client() -> Result<Client, String> {
 }
 
 fn valid_remote_principal(value: &str) -> bool {
-    value.starts_with("mcp.remote.")
-        && value.len() <= MAX_PRINCIPAL_BYTES
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    let Some(suffix) = value.strip_prefix("mcp.remote.") else {
+        return false;
+    };
+    suffix.len() == 32 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn bounded_display_name(value: &str) -> String {
@@ -189,16 +187,16 @@ mod tests {
     }
 
     #[test]
-    fn remote_principal_validation_is_bounded_and_namespaced() {
+    fn remote_principal_validation_requires_canonical_hash() {
         assert!(valid_remote_principal(
             "mcp.remote.0123456789abcdef0123456789abcdef"
         ));
+        assert!(!valid_remote_principal("mcp.remote.0123456789abcdef"));
         assert!(!valid_remote_principal("mcp.local.codex"));
         assert!(!valid_remote_principal("mcp.remote.bad/value"));
-        assert!(!valid_remote_principal(&format!(
-            "mcp.remote.{}",
-            "a".repeat(MAX_PRINCIPAL_BYTES)
-        )));
+        assert!(!valid_remote_principal(
+            "mcp.remote.0123456789abcdef0123456789abcdeg"
+        ));
     }
 
     #[test]
