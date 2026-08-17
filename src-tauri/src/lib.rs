@@ -5,6 +5,7 @@ mod ai_gateway;
 mod ai_git;
 mod ai_task;
 mod ai_workspace;
+mod ai_worktree_cleanup;
 mod app_updater;
 mod atris_auth;
 mod backup;
@@ -108,6 +109,7 @@ pub fn run() {
             sync::recover_interrupted_syncs(app.handle()).map_err(std::io::Error::other)?;
             ai_gateway::initialize(app.handle()).map_err(std::io::Error::other)?;
             ai_git::initialize(app.handle()).map_err(std::io::Error::other)?;
+            ai_worktree_cleanup::setup(app.handle());
             ai_command::initialize(app.handle()).map_err(std::io::Error::other)?;
             ai_task::initialize(app.handle()).map_err(std::io::Error::other)?;
             ai_changeset::initialize(app.handle()).map_err(std::io::Error::other)?;
