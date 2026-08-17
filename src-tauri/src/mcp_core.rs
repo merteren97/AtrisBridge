@@ -61,7 +61,7 @@ pub fn manifest() -> McpCoreManifest {
         state_model: "stateless_mcp_explicit_atris_ai_session_handle",
         principal_model: "authenticated_transport_principal_plus_explicit_workspace_session",
         extensions: vec![MCP_TASK_EXTENSION],
-        instructions: "AtrisBridge is the sole local workspace authority. The transport authenticates the AI client principal; model-visible arguments never choose clientId. Use workspace_list and session_open to bootstrap an explicit AtrisBridge workspace session, then include that session handle on every session-bound tool. Never infer or construct absolute local paths, never request raw shell/rclone/Git passthrough, and never bypass workspace permissions. Use isolated worktrees for command execution and review changes before remote Git or destructive workspace operations.",
+        instructions: "AtrisBridge is the sole local workspace authority. The transport authenticates the AI client principal; model-visible arguments never choose clientId. Use workspace_list and session_open to bootstrap an explicit AtrisBridge workspace session, then include that session handle on every session-bound tool. Never infer or construct absolute local paths, never request raw shell/rclone/Git passthrough, and never bypass workspace permissions. Session mode determines whether workspace operations run directly or inside an isolated worktree; fixed command profiles require command.execute permission and follow that session mode. Review changes before remote Git or destructive workspace operations.",
         tools: tool_catalog(),
     }
 }
@@ -139,41 +139,41 @@ pub fn tool_catalog() -> Vec<McpToolContract> {
             None,
         ),
         tool(
-    "workspace_read_text",
-    "Read text file",
-    "Read a bounded UTF-8 line window from a workspace-relative file. Sensitive files still require sensitive.read.",
-    &["workspace.read"],
-    false,
-    schema(
-        json!({
-            "sessionId": session_id_schema(),
-            "relativePath": relative_path_schema(),
-            "startLine": {"type": ["integer", "null"], "minimum": 1},
-            "endLine": {"type": ["integer", "null"], "minimum": 1}
-        }),
-        &["sessionId", "relativePath"],
-    ),
-    read_only(false),
-    None,
-),
+            "workspace_read_text",
+            "Read text file",
+            "Read a bounded UTF-8 line window from a workspace-relative file. Sensitive files still require sensitive.read.",
+            &["workspace.read"],
+            false,
+            schema(
+                json!({
+                    "sessionId": session_id_schema(),
+                    "relativePath": relative_path_schema(),
+                    "startLine": {"type": ["integer", "null"], "minimum": 1},
+                    "endLine": {"type": ["integer", "null"], "minimum": 1}
+                }),
+                &["sessionId", "relativePath"],
+            ),
+            read_only(false),
+            None,
+        ),
         tool(
-    "workspace_search",
-    "Search workspace",
-    "Search bounded workspace text using AtrisBridge path, ignore, sensitive-file, and symlink policies. includeSensitive additionally requires sensitive.read at execution time.",
-    &["workspace.read"],
-    false,
-    schema(
-        json!({
-            "sessionId": session_id_schema(),
-            "query": {"type": "string", "minLength": 1, "maxLength": 512},
-            "limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 200},
-            "includeSensitive": {"type": "boolean", "default": false}
-        }),
-        &["sessionId", "query"],
-    ),
-    read_only(false),
-    None,
-),
+            "workspace_search",
+            "Search workspace",
+            "Search bounded workspace text using AtrisBridge path, ignore, sensitive-file, and symlink policies. includeSensitive additionally requires sensitive.read at execution time.",
+            &["workspace.read"],
+            false,
+            schema(
+                json!({
+                    "sessionId": session_id_schema(),
+                    "query": {"type": "string", "minLength": 1, "maxLength": 512},
+                    "limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 200},
+                    "includeSensitive": {"type": "boolean", "default": false}
+                }),
+                &["sessionId", "query"],
+            ),
+            read_only(false),
+            None,
+        ),
         tool(
             "changeset_prepare",
             "Prepare workspace changeset",
@@ -236,15 +236,15 @@ pub fn tool_catalog() -> Vec<McpToolContract> {
             None,
         ),
         tool(
-    "worktree_provision",
-    "Provision isolated worktree",
-    "Provision and verify an AtrisBridge-owned Git worktree for an isolated AI session.",
-    &["git.local"],
-    true,
-    session_only_schema(),
-    mutating(false, false, false),
-    None,
-),
+            "worktree_provision",
+            "Provision isolated worktree",
+            "Provision and verify an AtrisBridge-owned Git worktree for an isolated AI session.",
+            &["git.local"],
+            true,
+            session_only_schema(),
+            mutating(false, false, false),
+            None,
+        ),
         tool(
             "worktree_list",
             "List isolated worktrees",
@@ -282,22 +282,22 @@ pub fn tool_catalog() -> Vec<McpToolContract> {
             None,
         ),
         tool(
-    "git_diff",
-    "Git diff",
-    "Read bounded Git diff with external diff, textconv, and rename detection disabled.",
-    &["git.local", "workspace.read"],
-    false,
-    schema(
-        json!({
-            "sessionId": session_id_schema(),
-            "staged": {"type": "boolean", "default": false},
-            "relativePath": {"type": ["string", "null"], "maxLength": 1024}
-        }),
-        &["sessionId"],
-    ),
-    read_only(false),
-    None,
-),
+            "git_diff",
+            "Git diff",
+            "Read bounded Git diff with external diff, textconv, and rename detection disabled.",
+            &["git.local", "workspace.read"],
+            false,
+            schema(
+                json!({
+                    "sessionId": session_id_schema(),
+                    "staged": {"type": "boolean", "default": false},
+                    "relativePath": {"type": ["string", "null"], "maxLength": 1024}
+                }),
+                &["sessionId"],
+            ),
+            read_only(false),
+            None,
+        ),
         tool(
             "git_log",
             "Git log",
@@ -319,25 +319,25 @@ pub fn tool_catalog() -> Vec<McpToolContract> {
             None,
         ),
         tool(
-    "git_stage",
-    "Stage files",
-    "Stage explicit regular-file paths and bind ownership to Git index evidence for the current AI session.",
-    &["git.local"],
-    false,
-    session_paths_schema(),
-    mutating(false, false, false),
-    None,
-),
+            "git_stage",
+            "Stage files",
+            "Stage explicit regular-file paths and bind ownership to Git index evidence for the current AI session.",
+            &["git.local"],
+            false,
+            session_paths_schema(),
+            mutating(false, false, false),
+            None,
+        ),
         tool(
-    "git_unstage",
-    "Unstage files",
-    "Unstage explicit paths only when the session-owned Git index evidence still matches.",
-    &["git.local"],
-    false,
-    session_paths_schema(),
-    mutating(false, false, false),
-    None,
-),
+            "git_unstage",
+            "Unstage files",
+            "Unstage explicit paths only when the session-owned Git index evidence still matches.",
+            &["git.local"],
+            false,
+            session_paths_schema(),
+            mutating(false, false, false),
+            None,
+        ),
         tool(
             "git_commit",
             "Commit staged AI changes",
@@ -371,21 +371,21 @@ pub fn tool_catalog() -> Vec<McpToolContract> {
             None,
         ),
         tool(
-    "git_revert",
-    "Revert commit",
-    "Create a non-interactive revert for an explicit commit. AtrisBridge aborts the revert automatically on failure.",
-    &["git.local", "workspace.edit"],
-    false,
-    schema(
-        json!({
-            "sessionId": session_id_schema(),
-            "commit": {"type": "string", "minLength": 7, "maxLength": 128}
-        }),
-        &["sessionId", "commit"],
-    ),
-    mutating(true, false, false),
-    None,
-),
+            "git_revert",
+            "Revert commit",
+            "Create a non-interactive revert for an explicit commit. AtrisBridge aborts the revert automatically on failure.",
+            &["git.local", "workspace.edit"],
+            false,
+            schema(
+                json!({
+                    "sessionId": session_id_schema(),
+                    "commit": {"type": "string", "minLength": 7, "maxLength": 128}
+                }),
+                &["sessionId", "commit"],
+            ),
+            mutating(true, false, false),
+            None,
+        ),
         tool(
             "git_push",
             "Push Git branch",
@@ -404,21 +404,21 @@ pub fn tool_catalog() -> Vec<McpToolContract> {
             None,
         ),
         tool(
-    "command_profiles",
-    "List command profiles",
-    "List only AtrisBridge-detected fixed build/test/lint/check profiles available in the isolated worktree.",
-    &["command.execute", "git.local"],
-    true,
-    session_only_schema(),
-    read_only(false),
-    None,
-),
+            "command_profiles",
+            "List command profiles",
+            "List only AtrisBridge-detected fixed build/test/lint/check profiles available for the current workspace session.",
+            &["command.execute"],
+            false,
+            session_only_schema(),
+            read_only(false),
+            None,
+        ),
         tool(
             "command_run",
             "Run command profile",
-            "Run one fixed AtrisBridge command profile as a cancellable durable task with bounded encrypted output.",
-            &["command.execute", "git.local"],
-            true,
+            "Run one fixed AtrisBridge command profile in the current direct or isolated session as a cancellable durable task with bounded encrypted output.",
+            &["command.execute"],
+            false,
             schema(
                 json!({
                     "sessionId": session_id_schema(),
@@ -678,6 +678,18 @@ mod tests {
         assert!(search.input_schema["properties"]
             .get("pathPrefix")
             .is_none());
+    }
+
+    #[test]
+    fn command_contract_matches_runtime_authority() {
+        for name in ["command_profiles", "command_run"] {
+            let tool = tool_catalog()
+                .into_iter()
+                .find(|tool| tool.name == name)
+                .expect("command tool");
+            assert_eq!(tool.required_capabilities, vec!["command.execute"]);
+            assert!(!tool.requires_isolated_worktree);
+        }
     }
 
     #[test]
