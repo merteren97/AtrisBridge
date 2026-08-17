@@ -110,7 +110,7 @@ const PRESETS: Array<{
   },
   {
     id: "developer",
-    title: "Developer",
+    title: "Development Access",
     description: "Read/edit files, run approved project tasks and use local Git. Risky capabilities stay on Ask.",
     icon: Code2,
   },
@@ -291,7 +291,7 @@ export default function AiPolicyPresetPanel({ workspaces, onError }: AiPolicyPre
         <div>
           <span className="section-kicker">AI client permissions</span>
           <h3 id="ai-bulk-policy-title">Presets, workspace scope &amp; custom capabilities</h3>
-          <p>Choose a client and one or more workspaces, review a preset, then apply it as-is or customize individual capabilities in the same place.</p>
+          <p>Choose a client and one or more workspaces, review a preset, then apply it as-is or customize individual capabilities. These presets control AtrisBridge workspace authority only; ChatGPT app and Developer Mode availability are separate platform settings.</p>
         </div>
         <button className="button secondary" type="button" onClick={() => void refreshClients()} disabled={busy !== null}>
           <RefreshCw size={13} className={busy === "refresh" ? "spin" : ""} /> Refresh clients
@@ -454,7 +454,7 @@ export default function AiPolicyPresetPanel({ workspaces, onError }: AiPolicyPre
 
       <div className="ai-bulk-policy-note">
         <Bot size={14} />
-        <p><strong>{selectedClient?.label ?? "Select an authenticated client"}</strong>{selectedWorkspaces.length > 0 ? ` · ${selectedWorkspaces.length} workspace(s) selected.` : " · Select at least one workspace."} Presets and custom rules now share the same per-client, per-workspace permission authority.</p>
+        <p><strong>{selectedClient?.label ?? "Select an authenticated client"}</strong>{selectedWorkspaces.length > 0 ? ` · ${selectedWorkspaces.length} workspace(s) selected.` : " · Select at least one workspace."} These rules are scoped to AtrisBridge workspace authority; they do not enable or disable ChatGPT Developer Mode.</p>
       </div>
     </section>
   );
