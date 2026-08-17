@@ -119,7 +119,8 @@ fn cleanup_candidate(
         Err(_) => return Ok(false),
     };
 
-    let expected_path = expected_worktree_path(app, &candidate.workspace_id, &candidate.session_id)?;
+    let expected_path =
+        expected_worktree_path(app, &candidate.workspace_id, &candidate.session_id)?;
     let recorded_path = PathBuf::from(&candidate.path);
     if recorded_path.exists() {
         let canonical_recorded = recorded_path
@@ -197,8 +198,11 @@ fn expected_worktree_path(
 }
 
 fn ensure_repository_root(root: &Path) -> Result<(), String> {
-    let top = git_text(root, &["-c", "core.fsmonitor=false", "rev-parse", "--show-toplevel"])?
-        .ok_or_else(|| "Workspace is no longer a Git repository.".to_string())?;
+    let top = git_text(
+        root,
+        &["-c", "core.fsmonitor=false", "rev-parse", "--show-toplevel"],
+    )?
+    .ok_or_else(|| "Workspace is no longer a Git repository.".to_string())?;
     let top = PathBuf::from(top.trim())
         .canonicalize()
         .map_err(|error| format!("Could not resolve Git repository root: {error}"))?;
@@ -206,7 +210,10 @@ fn ensure_repository_root(root: &Path) -> Result<(), String> {
         .canonicalize()
         .map_err(|error| format!("Could not resolve workspace root: {error}"))?;
     if top != root {
-        return Err("AI worktree cleanup requires the workspace itself to remain the Git repository root.".into());
+        return Err(
+            "AI worktree cleanup requires the workspace itself to remain the Git repository root."
+                .into(),
+        );
     }
     Ok(())
 }
@@ -378,7 +385,9 @@ fn git_mutation(root: &Path, args: &[&str], action: &str) -> Result<(), String> 
     if status.success() {
         Ok(())
     } else {
-        Err(format!("Could not {action}; Git rejected the guarded cleanup operation."))
+        Err(format!(
+            "Could not {action}; Git rejected the guarded cleanup operation."
+        ))
     }
 }
 
