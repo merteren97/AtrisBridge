@@ -144,9 +144,10 @@ fn dispatch_tool_call(
         Ok(value) if task_required => task_create_result(value),
         Ok(value) => Ok(call_tool_result(value, false, None)),
         Err(error) => {
+            let authority_code = authority_error_code(&error);
             let safe = local_mcp_ipc::redact_local_paths(app, &error);
             Ok(call_tool_result(
-                json!({"error": {"code": "authority_error", "message": safe}}),
+                json!({"error": {"code": authority_code, "message": safe}}),
                 true,
                 Some("AtrisBridge Desktop rejected the tool request."),
             ))
@@ -415,6 +416,63 @@ fn rpc_internal(detail: &str) -> RpcFailure {
     }
 }
 
+fn authority_error_code(error: &str) -> &'static str {
+    if error == "Workspace path is blocked by the AtrisBridge AI hard-deny policy." {
+        return "path_reserved_namespace";
+    }
+    if error == "Workspace path is excluded from AI access by built-in project rules." {
+        return "path_builtin_excluded";
+    }
+    if error == "Workspace path is excluded by .atrisbridgeignore." {
+        return "path_custom_ignored";
+    }
+    if error == "Absolute filesystem paths are not accepted by the AI workspace gateway."
+        || error.contains("Workspace paths must use forward slashes")
+        || error.contains("Workspace path contains traversal or non-normal components")
+        || error.contains("Workspace path contains a non-portable segment")
+        || error.contains("Workspace path contains a Windows-reserved file name")
+        || error.contains("Workspace path is empty or exceeds the portable path limit")
+    {
+        return "path_invalid";
+    }
+    if error.contains("requires explicit session approval") {
+        return "permission_requires_approval";
+    }
+    if error.contains(" is denied for this client and workspace")
+        || error.contains("is not authorized for capability")
+    {
+        return "permission_denied";
+    }
+    if error == "AI session was not found." {
+        return "session_not_found";
+    }
+    if error.starts_with("AI session is not active") {
+        return "session_not_active";
+    }
+    if error.contains("does not belong to this active AI session")
+        || error.contains("is not owned by the current workspace session")
+    {
+        return "ownership_mismatch";
+    }
+    if error.contains("expectedBeforeHash does not match current workspace evidence")
+        || error.contains("changed after the AI changeset was prepared")
+    {
+        return "stale_evidence";
+    }
+    if error.contains("changed after the AI changeset applied") {
+        return "rollback_evidence_mismatch";
+    }
+    if error.contains("cannot execute from status")
+        || error.contains("Only an applied AI changeset can be undone")
+    {
+        return "changeset_state_conflict";
+    }
+    if error.ends_with("already exists.") {
+        return "path_conflict";
+    }
+    "authority_error"
+}
+
 fn authority_failure(app: &AppHandle, error: String) -> RpcFailure {
     RpcFailure {
         code: -32602,
@@ -476,5 +534,30 @@ mod tests {
         assert_eq!(protocol_task_status("failed"), "failed");
         assert_eq!(protocol_task_status("interrupted"), "failed");
         assert_eq!(protocol_task_status("cancelled"), "cancelled");
+    }
+
+    #[test]
+    fn authority_errors_have_stable_remote_codes() {
+        assert_eq!(
+            authority_error_code("Workspace path is blocked by the AtrisBridge AI hard-deny policy."),
+            "path_reserved_namespace"
+        );
+        assert_eq!(
+            authority_error_code("Workspace path is excluded from AI access by built-in project rules."),
+            "path_builtin_excluded"
+        );
+        assert_eq!(
+            authority_error_code("AI capability 'workspace.edit' requires explicit session approval."),
+            "permission_requires_approval"
+        );
+        assert_eq!(
+            authority_error_code("AI session is not authorized for capability 'workspace.edit'."),
+            "permission_denied"
+        );
+        assert_eq!(
+            authority_error_code("expectedBeforeHash does not match current workspace evidence."),
+            "stale_evidence"
+        );
+        assert_eq!(authority_error_code("Unexpected internal failure."), "authority_error");
     }
 }
