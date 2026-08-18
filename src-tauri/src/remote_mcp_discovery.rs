@@ -113,20 +113,31 @@ pub async fn route_remote_mcp_grant_client_here(
     }
     let auth_state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let Some(credential) = atris_auth::ensure_desktop_session_credential(&app, &auth_state)? else {
-            return Err("Sign in to AtrisHub before routing a remote MCP client to this computer.".into());
+        let Some(credential) = atris_auth::ensure_desktop_session_credential(&app, &auth_state)?
+        else {
+            return Err(
+                "Sign in to AtrisHub before routing a remote MCP client to this computer.".into(),
+            );
         };
         let client = discovery_client()?;
         let response = client
             .post(remote_client_url(&principal))
             .bearer_auth(&credential.access_token)
             .send()
-            .map_err(|error| format!("Could not route AtrisHub remote MCP client to this Desktop: {error}"))?;
+            .map_err(|error| {
+                format!("Could not route AtrisHub remote MCP client to this Desktop: {error}")
+            })?;
         if response.status() == StatusCode::NOT_FOUND {
             return Ok(false);
         }
-        if matches!(response.status(), StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
-            return Err("AtrisHub rejected the current Desktop session while changing remote MCP routing.".into());
+        if matches!(
+            response.status(),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+        ) {
+            return Err(
+                "AtrisHub rejected the current Desktop session while changing remote MCP routing."
+                    .into(),
+            );
         }
         if !response.status().is_success() {
             return Err(format!(
@@ -134,9 +145,9 @@ pub async fn route_remote_mcp_grant_client_here(
                 response.status()
             ));
         }
-        let payload: RouteClientResponse = response
-            .json()
-            .map_err(|error| format!("AtrisHub returned invalid remote MCP routing metadata: {error}"))?;
+        let payload: RouteClientResponse = response.json().map_err(|error| {
+            format!("AtrisHub returned invalid remote MCP routing metadata: {error}")
+        })?;
         Ok(payload.activated)
     })
     .await
