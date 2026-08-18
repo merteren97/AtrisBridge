@@ -3,8 +3,11 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use futures_util::{FutureExt, SinkExt, StreamExt};
-use serde::Serialize;
+use futures_util::{
+    stream::{SplitSink, SplitStream},
+    FutureExt, SinkExt, StreamExt,
+};
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 use tokio::{
     sync::{mpsc, Semaphore},
@@ -17,7 +20,9 @@ use tokio_tungstenite::{
         http::{header::AUTHORIZATION, HeaderValue},
         Message,
     },
+    MaybeTlsStream, WebSocketStream,
 };
+use uuid::Uuid;
 
 use crate::{
     atris_auth::{self, AtrisHubAuthState, DesktopSessionCredential},
@@ -29,9 +34,14 @@ const CONNECTOR_URL: &str = "https://atrishub.com/api/mcp/v1/mcp";
 const MAX_RELAY_PAYLOAD_BYTES: usize = 6 * 1024 * 1024;
 const MAX_LOCAL_INFLIGHT: usize = 32;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+const RELAY_READY_TIMEOUT: Duration = Duration::from_secs(15);
 const AUTH_CHECK_INTERVAL: Duration = Duration::from_secs(15);
 const SIGNED_OUT_RETRY: Duration = Duration::from_secs(5);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
+
+type RelaySocket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+type RelayWriter = SplitSink<RelaySocket, Message>;
+type RelayReader = SplitStream<RelaySocket>;
 
 #[derive(Clone, Default)]
 pub struct RemoteMcpRelayManager {
@@ -96,6 +106,24 @@ impl RelayLifecycleState {
 enum ConnectionExit {
     CredentialChanged,
     RemoteClosed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RelayReadyOutcome {
+    Ready,
+    RestartRequested,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RelayReady {
+    #[serde(rename = "type")]
+    kind: String,
+    version: u32,
+    device_id: String,
+    desktop_session_id: String,
+    session_generation: u64,
+    connection_id: String,
 }
 
 pub fn setup(app: &AppHandle) -> Result<(), String> {
@@ -290,8 +318,15 @@ async fn relay_loop(
         match connect_relay(&credential).await {
             Ok(socket) => {
                 reconnect_seconds = 1;
-                mark_online(&manager);
-                match run_connection(app.clone(), credential, socket, &mut wake_rx).await {
+                match run_connection(
+                    app.clone(),
+                    credential,
+                    socket,
+                    &mut wake_rx,
+                    &manager,
+                )
+                .await
+                {
                     Ok(ConnectionExit::CredentialChanged) => continue,
                     Ok(ConnectionExit::RemoteClosed) => {
                         mark_reconnecting(
@@ -341,12 +376,7 @@ async fn load_relay_credential(app: AppHandle) -> Result<Option<DesktopSessionCr
     .map_err(|error| format!("AtrisBridge remote MCP auth worker failed: {error}"))?
 }
 
-async fn connect_relay(
-    credential: &DesktopSessionCredential,
-) -> Result<
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
-    String,
-> {
+async fn connect_relay(credential: &DesktopSessionCredential) -> Result<RelaySocket, String> {
     let mut request = RELAY_URL
         .into_client_request()
         .map_err(|error| format!("Could not build AtrisHub relay request: {error}"))?;
@@ -365,12 +395,16 @@ async fn connect_relay(
 async fn run_connection(
     app: AppHandle,
     credential: DesktopSessionCredential,
-    socket: tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    >,
+    socket: RelaySocket,
     wake_rx: &mut mpsc::UnboundedReceiver<()>,
+    manager: &RemoteMcpRelayManager,
 ) -> Result<ConnectionExit, String> {
     let (mut writer, mut reader) = socket.split();
+    match await_relay_ready(&mut writer, &mut reader, &credential, wake_rx).await? {
+        RelayReadyOutcome::Ready => mark_online(manager),
+        RelayReadyOutcome::RestartRequested => return Ok(ConnectionExit::CredentialChanged),
+    }
+
     let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<Message>(MAX_LOCAL_INFLIGHT * 2);
     let permits = Arc::new(Semaphore::new(MAX_LOCAL_INFLIGHT));
     let mut auth_tick = interval(AUTH_CHECK_INTERVAL);
@@ -445,7 +479,7 @@ async fn run_connection(
                             .map_err(|error| format!("Could not answer AtrisHub relay heartbeat: {error}"))?;
                     }
                     Message::Pong(_) => {}
-                    Message::Close(_) => return Ok(ConnectionExit::RemoteClosed),
+                    Message::Close(frame) => return Err(close_message(frame.as_ref(), "after readiness")),
                     Message::Binary(_) => return Err("AtrisHub relay sent an unexpected binary payload.".into()),
                     Message::Frame(_) => {}
                 }
@@ -457,12 +491,101 @@ async fn run_connection(
                 }
             },
             wake = wake => {
-                if wake.is_none() || !credential_still_current(app.clone(), &credential).await? {
-                    let _ = writer.send(Message::Close(None)).await;
+                let _ = writer.send(Message::Close(None)).await;
+                if wake.is_none() {
                     return Ok(ConnectionExit::CredentialChanged);
                 }
+                return Ok(ConnectionExit::CredentialChanged);
             },
         }
+    }
+}
+
+async fn await_relay_ready(
+    writer: &mut RelayWriter,
+    reader: &mut RelayReader,
+    credential: &DesktopSessionCredential,
+    wake_rx: &mut mpsc::UnboundedReceiver<()>,
+) -> Result<RelayReadyOutcome, String> {
+    timeout(RELAY_READY_TIMEOUT, async {
+        loop {
+            let incoming = reader.next().fuse();
+            let wake = wake_rx.recv().fuse();
+            futures_util::pin_mut!(incoming, wake);
+            futures_util::select! {
+                incoming = incoming => {
+                    let Some(incoming) = incoming else {
+                        return Err("AtrisHub closed the remote MCP relay before readiness was confirmed.".to_string());
+                    };
+                    match incoming.map_err(|error| format!("Could not read AtrisHub relay readiness: {error}"))? {
+                        Message::Text(text) => {
+                            if text.len() > 16 * 1024 {
+                                return Err("AtrisHub relay readiness envelope exceeded the safety bound.".into());
+                            }
+                            let ready: RelayReady = serde_json::from_str(text.as_ref())
+                                .map_err(|_| "AtrisHub relay did not return a valid readiness envelope.".to_string())?;
+                            validate_relay_ready(credential, &ready)?;
+                            return Ok(RelayReadyOutcome::Ready);
+                        }
+                        Message::Ping(payload) => {
+                            writer.send(Message::Pong(payload)).await
+                                .map_err(|error| format!("Could not answer AtrisHub relay heartbeat while connecting: {error}"))?;
+                        }
+                        Message::Pong(_) => {}
+                        Message::Close(frame) => return Err(close_message(frame.as_ref(), "before readiness")),
+                        Message::Binary(_) => return Err("AtrisHub relay sent binary data before readiness.".into()),
+                        Message::Frame(_) => {}
+                    }
+                },
+                wake = wake => {
+                    let _ = writer.send(Message::Close(None)).await;
+                    if wake.is_none() {
+                        return Ok(RelayReadyOutcome::RestartRequested);
+                    }
+                    return Ok(RelayReadyOutcome::RestartRequested);
+                },
+            }
+        }
+    })
+    .await
+    .map_err(|_| "AtrisHub relay presence confirmation timed out.".to_string())?
+}
+
+fn validate_relay_ready(
+    credential: &DesktopSessionCredential,
+    ready: &RelayReady,
+) -> Result<(), String> {
+    if ready.kind != "relay_ready" || ready.version != 1 {
+        return Err("AtrisHub relay readiness protocol is not supported.".into());
+    }
+    if ready.device_id != credential.device_id
+        || ready.desktop_session_id != credential.desktop_session_id
+        || ready.session_generation != credential.session_generation
+    {
+        return Err("AtrisHub relay readiness is bound to another Desktop session.".into());
+    }
+    if !canonical_uuid_v4(&ready.connection_id) {
+        return Err("AtrisHub relay readiness connection identifier is invalid.".into());
+    }
+    Ok(())
+}
+
+fn canonical_uuid_v4(value: &str) -> bool {
+    Uuid::parse_str(value).is_ok_and(|parsed| {
+        parsed.get_version_num() == 4 && parsed.hyphenated().to_string().eq_ignore_ascii_case(value)
+    })
+}
+
+fn close_message(
+    frame: Option<&tokio_tungstenite::tungstenite::protocol::CloseFrame<'_>>,
+    phase: &str,
+) -> String {
+    let reason = frame
+        .map(|value| value.reason.trim().to_string())
+        .filter(|value| !value.is_empty());
+    match reason {
+        Some(reason) => format!("AtrisHub closed the remote MCP relay {phase}: {reason}"),
+        None => format!("AtrisHub closed the remote MCP relay {phase}."),
     }
 }
 
@@ -500,4 +623,41 @@ fn backoff_delay(seconds: u64) -> Duration {
     let bounded = seconds.min(MAX_RECONNECT_DELAY.as_secs());
     let jitter_ms = (chrono::Utc::now().timestamp_subsec_millis() as u64) % 500;
     Duration::from_millis(bounded * 1_000 + jitter_ms)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Duration as ChronoDuration, Utc};
+
+    fn credential() -> DesktopSessionCredential {
+        DesktopSessionCredential {
+            user_id: "user-1".into(),
+            device_id: "device-1".into(),
+            desktop_session_id: "11111111-1111-4111-8111-111111111111".into(),
+            session_generation: 3,
+            access_token: "token".into(),
+            access_token_expires_at: Utc::now() + ChronoDuration::minutes(10),
+            session_expires_at: Utc::now() + ChronoDuration::days(1),
+        }
+    }
+
+    #[test]
+    fn relay_ready_requires_the_current_desktop_binding() {
+        let current = credential();
+        let ready = RelayReady {
+            kind: "relay_ready".into(),
+            version: 1,
+            device_id: current.device_id.clone(),
+            desktop_session_id: current.desktop_session_id.clone(),
+            session_generation: current.session_generation,
+            connection_id: "22222222-2222-4222-8222-222222222222".into(),
+        };
+        assert!(validate_relay_ready(&current, &ready).is_ok());
+        let stale = RelayReady {
+            session_generation: current.session_generation + 1,
+            ..ready
+        };
+        assert!(validate_relay_ready(&current, &stale).is_err());
+    }
 }
