@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Bot,
   CheckCircle2,
@@ -37,6 +37,8 @@ interface AiClientConnectionsPanelProps {
 
 const CONNECTOR_URL_FALLBACK = "https://atrishub.com/api/mcp/v1/mcp";
 const CLIENT_ORDER: LocalMcpClientKind[] = ["codex", "claude"];
+const RELAY_AUTO_RECOVERY_COOLDOWN_MS = 30_000;
+const RELAY_AUTO_RECOVERY_REFRESH_MS = 1_200;
 
 function statusLabel(status: LocalMcpClientStatus): string {
   switch (status.registrationState) {
@@ -96,18 +98,41 @@ function remoteRoutingTone(client: RemoteMcpClientRecord): string {
   return "neutral";
 }
 
+function routedHereWithoutRelayPresence(clients: RemoteMcpClientRecord[]): boolean {
+  return clients.some(
+    (client) => client.activeOnThisDevice === true && client.relayReadyOnThisDevice !== true,
+  );
+}
+
 export default function AiClientConnectionsPanel({ onError }: AiClientConnectionsPanelProps) {
   const [clients, setClients] = useState<LocalMcpClientStatus[]>([]);
   const [remoteClients, setRemoteClients] = useState<RemoteMcpClientRecord[]>([]);
   const [relayStatus, setRelayStatus] = useState<RemoteMcpRelayStatus | null>(null);
   const [busy, setBusy] = useState<LocalMcpClientKind | "refresh" | "relay" | null>(null);
   const [remoteBusy, setRemoteBusy] = useState<string | null>(null);
+  const lastAutomaticRelayRecoveryAt = useRef(0);
 
   useEffect(() => {
     void refreshClients();
     const timer = window.setInterval(() => void refreshRemoteSurface(false), 10_000);
     return () => window.clearInterval(timer);
   }, []);
+
+  async function recoverRelayPresenceIfNeeded(
+    nextRemoteClients: RemoteMcpClientRecord[],
+    nextRelayStatus: RemoteMcpRelayStatus | null,
+  ) {
+    if (nextRelayStatus?.state !== "online" || !routedHereWithoutRelayPresence(nextRemoteClients)) return;
+    const now = Date.now();
+    if (now - lastAutomaticRelayRecoveryAt.current < RELAY_AUTO_RECOVERY_COOLDOWN_MS) return;
+    lastAutomaticRelayRecoveryAt.current = now;
+    try {
+      setRelayStatus(await retryRemoteMcpRelay());
+      window.setTimeout(() => void refreshRemoteSurface(false), RELAY_AUTO_RECOVERY_REFRESH_MS);
+    } catch {
+      // The regular status refresh will surface the relay error without creating a noisy retry loop.
+    }
+  }
 
   async function refreshRemoteSurface(reportErrors = true) {
     try {
@@ -117,6 +142,7 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
       ]);
       setRemoteClients(nextRemoteClients);
       setRelayStatus(nextRelayStatus);
+      await recoverRelayPresenceIfNeeded(nextRemoteClients, nextRelayStatus);
     } catch (error) {
       if (reportErrors) onError(String(error));
     }
@@ -133,6 +159,7 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
       setClients(nextClients);
       setRemoteClients(nextRemoteClients);
       setRelayStatus(nextRelayStatus);
+      await recoverRelayPresenceIfNeeded(nextRemoteClients, nextRelayStatus);
     } catch (error) {
       onError(String(error));
     } finally {
@@ -143,6 +170,7 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
   async function handleRelayRetry() {
     try {
       setBusy("relay");
+      lastAutomaticRelayRecoveryAt.current = Date.now();
       setRelayStatus(await retryRemoteMcpRelay());
       window.setTimeout(() => void refreshRemoteSurface(false), 900);
     } catch (error) {
@@ -219,9 +247,7 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
     }
   }
 
-  const routedHereWithoutPresence = remoteClients.some(
-    (client) => client.activeOnThisDevice === true && client.relayReadyOnThisDevice !== true,
-  );
+  const routedHereWithoutPresence = routedHereWithoutRelayPresence(remoteClients);
 
   return (
     <section id="ai-clients" className="settings-section ai-gateway-section">
@@ -279,8 +305,8 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
           <div className="ai-ask-note">
             <TriangleAlert size={14} />
             <div>
-              <strong>Relay presence is not ready.</strong>
-              <p>This authorization points to this computer, but AtrisHub has not confirmed a live relay presence for the current Desktop session. Retry the relay and wait for Ready before using ChatGPT.</p>
+              <strong>Relay presence is recovering.</strong>
+              <p>This authorization points to this computer, but AtrisHub no longer sees the live relay presence for the current Desktop session. AtrisBridge will reconnect automatically; use Retry relay only if this state does not clear.</p>
             </div>
           </div>
         )}
