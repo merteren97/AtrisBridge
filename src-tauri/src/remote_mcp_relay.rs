@@ -31,6 +31,7 @@ use crate::{
 
 const RELAY_URL: &str = "wss://atrishub.com/api/mcp/relay/v1/connect";
 const CONNECTOR_URL: &str = "https://atrishub.com/api/mcp/v1/mcp";
+const RELAY_READY_HEADER: &str = "x-atris-relay-ready";
 const MAX_RELAY_PAYLOAD_BYTES: usize = 6 * 1024 * 1024;
 const MAX_LOCAL_INFLIGHT: usize = 32;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -383,6 +384,9 @@ async fn connect_relay(credential: &DesktopSessionCredential) -> Result<RelaySoc
     let authorization = HeaderValue::from_str(&format!("Bearer {}", credential.access_token))
         .map_err(|_| "AtrisHub desktop access token could not be encoded safely.".to_string())?;
     request.headers_mut().insert(AUTHORIZATION, authorization);
+    request
+        .headers_mut()
+        .insert(RELAY_READY_HEADER, HeaderValue::from_static("1"));
 
     let connected = timeout(CONNECT_TIMEOUT, connect_async(request))
         .await
