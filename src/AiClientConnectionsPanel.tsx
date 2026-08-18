@@ -24,6 +24,7 @@ import {
   registerLocalMcpClient,
   retryRemoteMcpRelay,
   revokeRemoteMcpClient,
+  routeRemoteMcpClientHere,
   unregisterLocalMcpClient,
 } from "./lib/ai-gateway";
 import type { Workspace } from "./types";
@@ -80,6 +81,18 @@ function remoteClientDetail(client: RemoteMcpClientRecord): string {
   const authorized = client.authorizedAt ? `Authorized ${formatDate(client.authorizedAt)}` : "Authorized in AtrisHub";
   if (client.observed && client.lastSeenAt) return `${authorized} · last tool request ${formatDate(client.lastSeenAt)}`;
   return `${authorized} · no tool request observed in this Desktop process`;
+}
+
+function remoteRoutingLabel(client: RemoteMcpClientRecord): string {
+  if (client.activeOnThisDevice === true) return "Routed here";
+  if (client.activeOnThisDevice === false) return "Routed elsewhere";
+  return "Routing unknown";
+}
+
+function remoteRoutingTone(client: RemoteMcpClientRecord): string {
+  if (client.activeOnThisDevice === true) return "success";
+  if (client.activeOnThisDevice === false) return "warning";
+  return "neutral";
 }
 
 export default function AiClientConnectionsPanel({ onError }: AiClientConnectionsPanelProps) {
@@ -174,13 +187,27 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
     }
   }
 
+  async function handleRemoteRouteHere(client: RemoteMcpClientRecord) {
+    try {
+      setRemoteBusy(`route:${client.principal}`);
+      const activated = await routeRemoteMcpClientHere(client.principal);
+      if (!activated) throw new Error("AtrisHub could not find this remote authorization. Refresh the client list and try again.");
+      await refreshRemoteSurface(true);
+    } catch (error) {
+      onError(String(error));
+      await refreshRemoteSurface(false);
+    } finally {
+      setRemoteBusy(null);
+    }
+  }
+
   async function handleRemoteRevoke(client: RemoteMcpClientRecord) {
     const confirmed = window.confirm(
       `Revoke the AtrisHub OAuth authorization for ${client.displayName}?\n\n${client.principal}\n\nThis disconnects that exact remote client authorization and invalidates its grant-bound tokens. Local AtrisBridge workspace permission rules remain saved but inactive unless this principal is authorized again.`,
     );
     if (!confirmed) return;
     try {
-      setRemoteBusy(client.principal);
+      setRemoteBusy(`revoke:${client.principal}`);
       await revokeRemoteMcpClient(client.principal);
       await refreshRemoteSurface(true);
     } catch (error) {
@@ -254,32 +281,58 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
               </div>
               <span className="ai-status-pill neutral">Not authorized</span>
             </div>
-          ) : remoteClients.map((client) => (
-            <div className="ai-remote-row selected" key={client.principal}>
-              <span className="ai-remote-icon"><Cloud size={16} /></span>
-              <div className="ai-remote-identity">
-                <div><strong>{client.displayName}</strong><span>Remote</span></div>
-                <code>{client.principal}</code>
-                <small>{remoteClientDetail(client)}</small>
+          ) : remoteClients.map((client) => {
+            const routeBusy = remoteBusy === `route:${client.principal}`;
+            const revokeBusy = remoteBusy === `revoke:${client.principal}`;
+            return (
+              <div className="ai-remote-row selected" key={client.principal}>
+                <span className="ai-remote-icon"><Cloud size={16} /></span>
+                <div className="ai-remote-identity">
+                  <div><strong>{client.displayName}</strong><span>Remote</span></div>
+                  <code>{client.principal}</code>
+                  <small>{remoteClientDetail(client)}</small>
+                </div>
+                <div className="ai-remote-actions">
+                  <span className={`ai-status-pill ${remoteRoutingTone(client)}`}>
+                    {remoteRoutingLabel(client)}
+                  </span>
+                  {client.activeOnThisDevice === false && (
+                    <button
+                      className="button secondary"
+                      type="button"
+                      title="Route new ChatGPT sessions to this computer"
+                      onClick={() => void handleRemoteRouteHere(client)}
+                      disabled={remoteBusy !== null || busy !== null || relayStatus?.state !== "online"}
+                    >
+                      {routeBusy ? <RefreshCw className="spin" size={13} /> : <Link2 size={13} />}
+                      Route here
+                    </button>
+                  )}
+                  <button
+                    className="icon-action danger"
+                    type="button"
+                    title="Revoke this OAuth authorization"
+                    aria-label={`Revoke ${client.displayName} authorization`}
+                    onClick={() => void handleRemoteRevoke(client)}
+                    disabled={remoteBusy !== null || busy !== null}
+                  >
+                    {revokeBusy ? <RefreshCw className="spin" size={14} /> : <Trash2 size={14} />}
+                  </button>
+                </div>
               </div>
-              <div className="ai-remote-actions">
-                <span className={`ai-status-pill ${client.activeOnThisDevice === false ? "warning" : "success"}`}>
-                  {client.activeOnThisDevice === false ? "Routed elsewhere" : "Routed here"}
-                </span>
-                <button
-                  className="icon-action danger"
-                  type="button"
-                  title="Revoke this OAuth authorization"
-                  aria-label={`Revoke ${client.displayName} authorization`}
-                  onClick={() => void handleRemoteRevoke(client)}
-                  disabled={remoteBusy !== null || busy !== null}
-                >
-                  {remoteBusy === client.principal ? <RefreshCw className="spin" size={14} /> : <Trash2 size={14} />}
-                </button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
+
+        {remoteClients.some((client) => client.activeOnThisDevice === false) && (
+          <div className="ai-ask-note">
+            <ShieldCheck size={14} />
+            <div>
+              <strong>Routing changes only new sessions.</strong>
+              <p>Existing workspace sessions and command tasks remain pinned to the Desktop where they were created. Start a new ChatGPT workspace session after routing this authorization here.</p>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="ai-permission-header">
