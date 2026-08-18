@@ -319,14 +319,7 @@ async fn relay_loop(
         match connect_relay(&credential).await {
             Ok(socket) => {
                 reconnect_seconds = 1;
-                match run_connection(
-                    app.clone(),
-                    credential,
-                    socket,
-                    &mut wake_rx,
-                    &manager,
-                )
-                .await
+                match run_connection(app.clone(), credential, socket, &mut wake_rx, &manager).await
                 {
                     Ok(ConnectionExit::CredentialChanged) => continue,
                     Ok(ConnectionExit::RemoteClosed) => {
