@@ -14,6 +14,7 @@ const MAX_DISPLAY_NAME_CHARS: usize = 160;
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ActiveDeviceResponse {
+    relay_ready: bool,
     clients: Vec<ActiveDeviceClient>,
 }
 
@@ -23,13 +24,16 @@ struct ActiveDeviceClient {
     principal: String,
     display_name: String,
     active_on_this_device: bool,
+    relay_ready_on_this_device: bool,
     authorized_at: Option<String>,
     updated_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RouteClientResponse {
     activated: bool,
+    relay_ready: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -38,6 +42,7 @@ pub struct RemoteMcpGrantClient {
     principal: String,
     display_name: String,
     active_on_this_device: bool,
+    relay_ready_on_this_device: bool,
     authorized_at: Option<String>,
     updated_at: Option<String>,
 }
@@ -73,6 +78,7 @@ pub async fn list_remote_mcp_grant_clients(
         let payload: ActiveDeviceResponse = response
             .json()
             .map_err(|error| format!("AtrisHub returned invalid remote MCP client metadata: {error}"))?;
+        let relay_ready = payload.relay_ready;
         let mut clients = Vec::new();
         for client in payload.clients.into_iter().take(MAX_REMOTE_CLIENTS) {
             if !valid_remote_principal(&client.principal) {
@@ -82,6 +88,9 @@ pub async fn list_remote_mcp_grant_clients(
                 principal: client.principal,
                 display_name: bounded_display_name(&client.display_name),
                 active_on_this_device: client.active_on_this_device,
+                relay_ready_on_this_device: client.active_on_this_device
+                    && relay_ready
+                    && client.relay_ready_on_this_device,
                 authorized_at: client.authorized_at,
                 updated_at: client.updated_at,
             });
@@ -90,8 +99,13 @@ pub async fn list_remote_mcp_grant_clients(
         clients.dedup_by(|left, right| left.principal == right.principal);
         clients.sort_by(|left, right| {
             right
-                .active_on_this_device
-                .cmp(&left.active_on_this_device)
+                .relay_ready_on_this_device
+                .cmp(&left.relay_ready_on_this_device)
+                .then_with(|| {
+                    right
+                        .active_on_this_device
+                        .cmp(&left.active_on_this_device)
+                })
                 .then_with(|| right.updated_at.cmp(&left.updated_at))
                 .then_with(|| left.display_name.cmp(&right.display_name))
                 .then_with(|| left.principal.cmp(&right.principal))
@@ -130,6 +144,9 @@ pub async fn route_remote_mcp_grant_client_here(
         if response.status() == StatusCode::NOT_FOUND {
             return Ok(false);
         }
+        if response.status() == StatusCode::CONFLICT {
+            return Err("AtrisHub has not confirmed this computer as relay-ready yet. Retry the relay, wait for Ready, and try routing again.".into());
+        }
         if matches!(
             response.status(),
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
@@ -148,7 +165,10 @@ pub async fn route_remote_mcp_grant_client_here(
         let payload: RouteClientResponse = response.json().map_err(|error| {
             format!("AtrisHub returned invalid remote MCP routing metadata: {error}")
         })?;
-        Ok(payload.activated)
+        if payload.activated && !payload.relay_ready {
+            return Err("AtrisHub changed the route without confirming relay readiness; refresh the connection before continuing.".into());
+        }
+        Ok(payload.activated && payload.relay_ready)
     })
     .await
     .map_err(|error| format!("AtrisHub MCP routing worker failed: {error}"))?
