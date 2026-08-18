@@ -27,6 +27,11 @@ struct ActiveDeviceClient {
     updated_at: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct RouteClientResponse {
+    activated: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteMcpGrantClient {
@@ -98,6 +103,47 @@ pub async fn list_remote_mcp_grant_clients(
 }
 
 #[tauri::command]
+pub async fn route_remote_mcp_grant_client_here(
+    app: AppHandle,
+    state: State<'_, AtrisHubAuthState>,
+    principal: String,
+) -> Result<bool, String> {
+    if !valid_remote_principal(&principal) {
+        return Err("Remote MCP client principal is invalid.".into());
+    }
+    let auth_state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(credential) = atris_auth::ensure_desktop_session_credential(&app, &auth_state)? else {
+            return Err("Sign in to AtrisHub before routing a remote MCP client to this computer.".into());
+        };
+        let client = discovery_client()?;
+        let response = client
+            .post(remote_client_url(&principal))
+            .bearer_auth(&credential.access_token)
+            .send()
+            .map_err(|error| format!("Could not route AtrisHub remote MCP client to this Desktop: {error}"))?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(false);
+        }
+        if matches!(response.status(), StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+            return Err("AtrisHub rejected the current Desktop session while changing remote MCP routing.".into());
+        }
+        if !response.status().is_success() {
+            return Err(format!(
+                "AtrisHub remote MCP client routing failed ({}).",
+                response.status()
+            ));
+        }
+        let payload: RouteClientResponse = response
+            .json()
+            .map_err(|error| format!("AtrisHub returned invalid remote MCP routing metadata: {error}"))?;
+        Ok(payload.activated)
+    })
+    .await
+    .map_err(|error| format!("AtrisHub MCP routing worker failed: {error}"))?
+}
+
+#[tauri::command]
 pub async fn revoke_remote_mcp_grant_client(
     app: AppHandle,
     state: State<'_, AtrisHubAuthState>,
@@ -112,9 +158,8 @@ pub async fn revoke_remote_mcp_grant_client(
             return Err("Sign in to AtrisHub before revoking a remote MCP client.".into());
         };
         let client = discovery_client()?;
-        let url = format!("{ACTIVE_DEVICE_URL}/clients/{principal}");
         let response = client
-            .delete(url)
+            .delete(remote_client_url(&principal))
             .bearer_auth(&credential.access_token)
             .send()
             .map_err(|error| format!("Could not revoke AtrisHub remote MCP client: {error}"))?;
@@ -142,6 +187,10 @@ fn discovery_client() -> Result<Client, String> {
         .user_agent("AtrisBridge-Desktop")
         .build()
         .map_err(|error| format!("Could not initialize AtrisHub MCP discovery client: {error}"))
+}
+
+fn remote_client_url(principal: &str) -> String {
+    format!("{ACTIVE_DEVICE_URL}/clients/{principal}")
 }
 
 fn valid_remote_principal(value: &str) -> bool {
@@ -183,6 +232,15 @@ mod tests {
         assert_eq!(
             ACTIVE_DEVICE_URL,
             "https://atrishub.com/api/mcp/device/v1/active"
+        );
+    }
+
+    #[test]
+    fn remote_client_route_is_principal_scoped() {
+        let principal = "mcp.remote.0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            remote_client_url(principal),
+            "https://atrishub.com/api/mcp/device/v1/active/clients/mcp.remote.0123456789abcdef0123456789abcdef"
         );
     }
 
