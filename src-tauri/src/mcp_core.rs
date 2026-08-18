@@ -61,7 +61,7 @@ pub fn manifest() -> McpCoreManifest {
         state_model: "stateless_mcp_explicit_atris_ai_session_handle",
         principal_model: "authenticated_transport_principal_plus_explicit_workspace_session",
         extensions: vec![MCP_TASK_EXTENSION],
-        instructions: "AtrisBridge is the sole local workspace authority. The transport authenticates the AI client principal; model-visible arguments never choose clientId. Use workspace_list and session_open to bootstrap an explicit AtrisBridge workspace session, then include that session handle on every session-bound tool. Never infer or construct absolute local paths, never request raw shell/rclone/Git passthrough, and never bypass workspace permissions. Session mode determines whether workspace operations run directly or inside an isolated worktree; fixed command profiles require command.execute permission and follow that session mode. Review changes before remote Git or destructive workspace operations.",
+        instructions: "AtrisBridge is the sole local workspace authority. The transport authenticates the AI client principal; model-visible arguments never choose clientId. Use workspace_list and session_open to bootstrap an explicit AtrisBridge workspace session, then include that session handle on every session-bound tool. Use only portable workspace-relative paths: .git paths and AtrisBridge-reserved .atrisbridge-* names are hard-denied, while generated directories such as bin, obj, node_modules, target, dist, and build are excluded. Never use a reserved .atrisbridge-* name for a write probe; use a normal disposable workspace-relative file and undo the applied changeset afterwards. Never infer or construct absolute local paths, never request raw shell/rclone/Git passthrough, and never bypass workspace permissions. Session mode determines whether workspace operations run directly or inside an isolated worktree; fixed command profiles require command.execute permission and follow that session mode. Review changes before remote Git or destructive workspace operations.",
         tools: tool_catalog(),
     }
 }
@@ -177,7 +177,7 @@ pub fn tool_catalog() -> Vec<McpToolContract> {
         tool(
             "changeset_prepare",
             "Prepare workspace changeset",
-            "Prepare a recoverable create/replace/delete/move changeset. Replace, delete, and move require current BLAKE3 evidence.",
+            "Prepare a recoverable create/replace/delete/move changeset. Replace, delete, and move require current BLAKE3 evidence. Paths still obey the workspace hard-deny, generated-directory, ignore, sensitive-file, and symlink policies; never use .git or AtrisBridge-reserved .atrisbridge-* names as write probes.",
             &["workspace.edit"],
             false,
             schema(
@@ -506,7 +506,7 @@ fn relative_path_schema() -> Value {
         "type": "string",
         "minLength": 1,
         "maxLength": 1024,
-        "description": "Portable workspace-relative path. Absolute paths and traversal are rejected."
+        "description": "Portable workspace-relative path. Absolute paths and traversal are rejected. .git paths and AtrisBridge-reserved .atrisbridge-* names are hard-denied; generated directories such as bin, obj, node_modules, target, dist, and build are excluded."
     })
 }
 
@@ -738,5 +738,15 @@ mod tests {
                 .expect("tool");
             assert!(tool.annotations.open_world_hint);
         }
+    }
+
+    #[test]
+    fn relative_path_contract_names_reserved_and_generated_paths() {
+        let description = relative_path_schema()["description"]
+            .as_str()
+            .expect("relative path description");
+        assert!(description.contains(".git"));
+        assert!(description.contains(".atrisbridge-*"));
+        assert!(description.contains("obj"));
     }
 }
