@@ -71,6 +71,10 @@ export async function listRemoteMcpClients(): Promise<RemoteMcpClientRecord[]> {
   });
 }
 
+export async function routeRemoteMcpClientHere(principal: string): Promise<boolean> {
+  return invoke<boolean>("route_remote_mcp_grant_client_here", { principal });
+}
+
 export async function revokeRemoteMcpClient(principal: string): Promise<boolean> {
   return invoke<boolean>("revoke_remote_mcp_grant_client", { principal });
 }
