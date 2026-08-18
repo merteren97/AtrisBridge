@@ -27,6 +27,7 @@ export interface RemoteMcpGrantClient {
   principal: string;
   displayName: string;
   activeOnThisDevice: boolean;
+  relayReadyOnThisDevice: boolean;
   authorizedAt: string | null;
   updatedAt: string | null;
 }
@@ -38,6 +39,7 @@ export interface RemoteMcpClientRecord {
   lastSeenAt: string;
   observed?: boolean;
   activeOnThisDevice?: boolean;
+  relayReadyOnThisDevice?: boolean;
   authorizedAt?: string | null;
   authorizationUpdatedAt?: string | null;
 }

@@ -43,6 +43,7 @@ export async function listRemoteMcpClients(): Promise<RemoteMcpClientRecord[]> {
       lastSeenAt: "",
       observed: false,
       activeOnThisDevice: grant.activeOnThisDevice,
+      relayReadyOnThisDevice: grant.relayReadyOnThisDevice,
       authorizedAt: grant.authorizedAt,
       authorizationUpdatedAt: grant.updatedAt,
     });
@@ -53,6 +54,7 @@ export async function listRemoteMcpClients(): Promise<RemoteMcpClientRecord[]> {
       ...client,
       displayName: discovered?.displayName ?? client.displayName,
       activeOnThisDevice: discovered?.activeOnThisDevice,
+      relayReadyOnThisDevice: discovered?.relayReadyOnThisDevice,
       authorizedAt: discovered?.authorizedAt,
       authorizationUpdatedAt: discovered?.authorizationUpdatedAt,
       observed: true,
@@ -60,6 +62,13 @@ export async function listRemoteMcpClients(): Promise<RemoteMcpClientRecord[]> {
   }
 
   return [...clients.values()].sort((left, right) => {
+    if (left.relayReadyOnThisDevice !== right.relayReadyOnThisDevice) {
+      return left.relayReadyOnThisDevice === true
+        ? -1
+        : right.relayReadyOnThisDevice === true
+          ? 1
+          : 0;
+    }
     if (left.activeOnThisDevice !== right.activeOnThisDevice) {
       return left.activeOnThisDevice === true ? -1 : right.activeOnThisDevice === true ? 1 : 0;
     }

@@ -59,7 +59,7 @@ function statusTone(status: LocalMcpClientStatus): string {
 
 function relayLabel(status: RemoteMcpRelayStatus | null): string {
   if (!status?.started) return "Unavailable";
-  if (status.state === "online") return "Online";
+  if (status.state === "online") return "Ready";
   if (status.state === "connecting") return "Connecting";
   if (status.state === "reconnecting") return "Reconnecting";
   return "Signed out";
@@ -84,14 +84,15 @@ function remoteClientDetail(client: RemoteMcpClientRecord): string {
 }
 
 function remoteRoutingLabel(client: RemoteMcpClientRecord): string {
-  if (client.activeOnThisDevice === true) return "Routed here";
+  if (client.activeOnThisDevice === true && client.relayReadyOnThisDevice === true) return "Routed here · Ready";
+  if (client.activeOnThisDevice === true) return "Routed here · Relay not ready";
   if (client.activeOnThisDevice === false) return "Routed elsewhere";
   return "Routing unknown";
 }
 
 function remoteRoutingTone(client: RemoteMcpClientRecord): string {
-  if (client.activeOnThisDevice === true) return "success";
-  if (client.activeOnThisDevice === false) return "warning";
+  if (client.activeOnThisDevice === true && client.relayReadyOnThisDevice === true) return "success";
+  if (client.activeOnThisDevice === true || client.activeOnThisDevice === false) return "warning";
   return "neutral";
 }
 
@@ -218,6 +219,10 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
     }
   }
 
+  const routedHereWithoutPresence = remoteClients.some(
+    (client) => client.activeOnThisDevice === true && client.relayReadyOnThisDevice !== true,
+  );
+
   return (
     <section id="ai-clients" className="settings-section ai-gateway-section">
       <div className="settings-heading ai-gateway-heading">
@@ -259,7 +264,7 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
 
         <div className="ai-policy-summary">
           <div><small>Last connection attempt</small><strong>{formatDate(relayStatus?.lastAttemptAt)}</strong></div>
-          <div><small>Last connected</small><strong>{formatDate(relayStatus?.lastConnectedAt)}</strong></div>
+          <div><small>Last ready</small><strong>{formatDate(relayStatus?.lastConnectedAt)}</strong></div>
           <div><small>Authorized remote clients</small><strong>{remoteClients.length}</strong></div>
         </div>
 
@@ -267,6 +272,16 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
           <div className="ai-ask-note">
             <TriangleAlert size={14} />
             <div><strong>Last relay error</strong><p>{relayStatus.lastError}</p></div>
+          </div>
+        )}
+
+        {routedHereWithoutPresence && (
+          <div className="ai-ask-note">
+            <TriangleAlert size={14} />
+            <div>
+              <strong>Relay presence is not ready.</strong>
+              <p>This authorization points to this computer, but AtrisHub has not confirmed a live relay presence for the current Desktop session. Retry the relay and wait for Ready before using ChatGPT.</p>
+            </div>
           </div>
         )}
 
