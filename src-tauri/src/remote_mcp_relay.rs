@@ -574,7 +574,7 @@ fn canonical_uuid_v4(value: &str) -> bool {
 }
 
 fn close_message(
-    frame: Option<&tokio_tungstenite::tungstenite::protocol::CloseFrame<'_>>,
+    frame: Option<&tokio_tungstenite::tungstenite::protocol::CloseFrame>,
     phase: &str,
 ) -> String {
     let reason = frame
