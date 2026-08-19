@@ -603,7 +603,8 @@ async fn run_connection(
 }
 
 fn watchdog_expired(waiting_since: Option<StdInstant>, now: StdInstant) -> bool {
-    waiting_since.is_some_and(|started| now.saturating_duration_since(started) >= WATCHDOG_RESPONSE_TIMEOUT)
+    waiting_since
+        .is_some_and(|started| now.saturating_duration_since(started) >= WATCHDOG_RESPONSE_TIMEOUT)
 }
 
 fn relay_capabilities(connection_id: &str) -> Value {
