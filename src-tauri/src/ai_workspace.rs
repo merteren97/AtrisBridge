@@ -1,6 +1,6 @@
 use std::{
     fs::{self, File},
-    io::Read,
+    io::{BufRead, BufReader, Read},
     path::{Component, Path, PathBuf},
     time::Instant,
 };
@@ -18,18 +18,16 @@ use crate::{
     },
 };
 
-const MAX_READ_BYTES: u64 = 1024 * 1024;
-const MAX_LINE_WINDOW: usize = 500;
-const DEFAULT_SEARCH_LIMIT: u32 = 50;
-const MAX_SEARCH_LIMIT: u32 = 200;
+const MAX_READ_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_LINE_WINDOW: usize = 2_000;
+const MAX_TEXT_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+const DEFAULT_SEARCH_LIMIT: u32 = 100;
+const MAX_SEARCH_LIMIT: u32 = 500;
 const MAX_SEARCH_QUERY_CHARS: usize = 512;
-const MAX_SEARCH_EXCERPT_CHARS: usize = 400;
-const MAX_SEARCHABLE_FILE_BYTES: u64 = 1024 * 1024;
-const BUILTIN_DIRECTORY_EXCLUDES: &[&str] = &[
-    ".git",
-    ".vs",
-    ".idea",
-    ".next",
+const MAX_SEARCH_EXCERPT_CHARS: usize = 700;
+const MAX_SEARCHABLE_FILE_BYTES: u64 = 4 * 1024 * 1024;
+const BUILTIN_CASE_INSENSITIVE_DIRECTORY_EXCLUDES: &[&str] = &[".git", ".vs", ".idea", ".next"];
+const BUILTIN_GENERATED_DIRECTORY_EXCLUDES: &[&str] = &[
     "node_modules",
     "dist",
     "build",
@@ -80,6 +78,7 @@ pub struct AiTextFile {
     pub end_line: u64,
     pub total_lines: u64,
     pub truncated: bool,
+    pub next_start_line: Option<u64>,
     pub content: String,
 }
 
@@ -102,6 +101,14 @@ pub struct AiSearchResult {
     pub truncated: bool,
     pub searched_files: u64,
     pub skipped_files: u64,
+}
+
+struct TextWindow {
+    content: String,
+    end_line: u64,
+    total_lines: u64,
+    truncated: bool,
+    next_start_line: Option<u64>,
 }
 
 #[tauri::command]
@@ -156,50 +163,21 @@ pub fn ai_read_text_file(
         let (size, blake3) = scanner::fingerprint_file(&path)?;
         if size > MAX_READ_BYTES {
             return Err(format!(
-                "AI text reads are limited to {} bytes per file.",
-                MAX_READ_BYTES
+                "AI text source files are limited to {MAX_READ_BYTES} bytes."
             ));
         }
-        let bytes =
-            fs::read(&path).map_err(|error| format!("Could not read workspace file: {error}"))?;
-        let text = String::from_utf8(bytes)
-            .map_err(|_| "Workspace file is not valid UTF-8 text.".to_string())?;
-        let lines = text.lines().collect::<Vec<_>>();
-        let total_lines = u64::try_from(lines.len()).unwrap_or(u64::MAX);
+
         let requested_start = start_line.unwrap_or(1);
         if requested_start == 0 {
             return Err("startLine is 1-based and must be at least 1.".into());
         }
-        let requested_end = end_line.unwrap_or_else(|| {
-            requested_start.saturating_add(u64::try_from(MAX_LINE_WINDOW - 1).unwrap_or(499))
-        });
+        let default_span = u64::try_from(MAX_LINE_WINDOW.saturating_sub(1)).unwrap_or(u64::MAX);
+        let requested_end = end_line.unwrap_or_else(|| requested_start.saturating_add(default_span));
         if requested_end < requested_start {
             return Err("endLine must be greater than or equal to startLine.".into());
         }
-        let requested_count = requested_end
-            .saturating_sub(requested_start)
-            .saturating_add(1);
-        if requested_count > u64::try_from(MAX_LINE_WINDOW).unwrap_or(500) {
-            return Err(format!(
-                "AI text reads are limited to {MAX_LINE_WINDOW} lines per request."
-            ));
-        }
 
-        let start_index = usize::try_from(requested_start.saturating_sub(1)).unwrap_or(usize::MAX);
-        let end_index = usize::try_from(requested_end)
-            .unwrap_or(usize::MAX)
-            .min(lines.len());
-        let content = if start_index >= lines.len() {
-            String::new()
-        } else {
-            lines[start_index..end_index].join("\n")
-        };
-        let actual_end = if start_index >= lines.len() {
-            requested_start.saturating_sub(1)
-        } else {
-            u64::try_from(end_index).unwrap_or(u64::MAX)
-        };
-
+        let window = read_text_window(&path, requested_start, requested_end)?;
         Ok(AiTextFile {
             workspace_id: session.workspace_id.clone(),
             relative_path: normalize_relative_path(&relative_path)?,
@@ -208,10 +186,11 @@ pub fn ai_read_text_file(
             blake3,
             sensitive: class == AiPathClass::Sensitive,
             start_line: requested_start,
-            end_line: actual_end,
-            total_lines,
-            truncated: actual_end < total_lines,
-            content,
+            end_line: window.end_line,
+            total_lines: window.total_lines,
+            truncated: window.truncated,
+            next_start_line: window.next_start_line,
+            content: window.content,
         })
     })();
     record_tool_result(
@@ -223,6 +202,58 @@ pub fn ai_read_text_file(
         &result,
     )?;
     result
+}
+
+fn read_text_window(path: &Path, requested_start: u64, requested_end: u64) -> Result<TextWindow, String> {
+    let max_span = u64::try_from(MAX_LINE_WINDOW.saturating_sub(1)).unwrap_or(u64::MAX);
+    let effective_end = requested_end.min(requested_start.saturating_add(max_span));
+    let file = File::open(path).map_err(|error| format!("Could not read workspace file: {error}"))?;
+    let reader = BufReader::new(file);
+    let mut content = String::new();
+    let mut total_lines = 0u64;
+    let mut actual_end = requested_start.saturating_sub(1);
+    let mut response_limit_hit = false;
+
+    for line_result in reader.lines() {
+        let line = line_result.map_err(|error| {
+            if error.kind() == std::io::ErrorKind::InvalidData {
+                "Workspace file is not valid UTF-8 text.".to_string()
+            } else {
+                format!("Could not read workspace file: {error}")
+            }
+        })?;
+        total_lines = total_lines.saturating_add(1);
+        if total_lines < requested_start || total_lines > effective_end || response_limit_hit {
+            continue;
+        }
+
+        let separator_bytes = usize::from(!content.is_empty());
+        let required_bytes = separator_bytes.saturating_add(line.len());
+        if required_bytes > MAX_TEXT_RESPONSE_BYTES.saturating_sub(content.len()) {
+            if content.is_empty() {
+                return Err(format!(
+                    "A single text line exceeds the {MAX_TEXT_RESPONSE_BYTES}-byte AI response safety bound."
+                ));
+            }
+            response_limit_hit = true;
+            continue;
+        }
+        if !content.is_empty() {
+            content.push('\n');
+        }
+        content.push_str(&line);
+        actual_end = total_lines;
+    }
+
+    let truncated = actual_end < total_lines;
+    let next_start_line = truncated.then(|| actual_end.saturating_add(1));
+    Ok(TextWindow {
+        content,
+        end_line: actual_end,
+        total_lines,
+        truncated,
+        next_start_line,
+    })
 }
 
 #[tauri::command]
@@ -339,7 +370,9 @@ fn visit_search_directory(
             continue;
         }
         let is_dir = file_type.is_dir();
-        if is_builtin_directory_excluded(relative) || is_custom_ignored(&path, is_dir, matcher) {
+        if is_builtin_directory_excluded(relative, is_dir)
+            || is_custom_ignored(&path, is_dir, matcher)
+        {
             state.skipped_files = state.skipped_files.saturating_add(1);
             continue;
         }
@@ -595,9 +628,6 @@ pub(crate) fn ensure_ai_path_allowed(
         return Err("Workspace path is blocked by the AtrisBridge AI hard-deny policy.".into());
     }
     let relative = Path::new(&normalized);
-    if is_builtin_directory_excluded(relative) {
-        return Err("Workspace path is excluded from AI access by built-in project rules.".into());
-    }
     let matcher = build_custom_ignore(root)?;
     let candidate = root.join(relative);
     if is_custom_ignored(&candidate, false, matcher.as_ref()) {
@@ -743,15 +773,26 @@ fn is_custom_ignored(path: &Path, is_dir: bool, matcher: Option<&Gitignore>) -> 
         .unwrap_or(false)
 }
 
-fn is_builtin_directory_excluded(relative: &Path) -> bool {
-    relative
+fn is_builtin_directory_name_excluded(component: &str) -> bool {
+    BUILTIN_CASE_INSENSITIVE_DIRECTORY_EXCLUDES
+        .iter()
+        .any(|candidate| component.eq_ignore_ascii_case(candidate))
+        || BUILTIN_GENERATED_DIRECTORY_EXCLUDES
+            .iter()
+            .any(|candidate| component == *candidate)
+}
+
+fn is_builtin_directory_excluded(relative: &Path, is_dir: bool) -> bool {
+    let mut components = relative
         .components()
         .filter_map(|component| component.as_os_str().to_str())
-        .any(|component| {
-            BUILTIN_DIRECTORY_EXCLUDES
-                .iter()
-                .any(|candidate| component.eq_ignore_ascii_case(candidate))
-        })
+        .collect::<Vec<_>>();
+    if !is_dir {
+        components.pop();
+    }
+    components
+        .into_iter()
+        .any(is_builtin_directory_name_excluded)
 }
 
 fn relative_to_string(relative: &Path) -> String {
@@ -786,6 +827,10 @@ fn truncate_chars(value: &str, limit: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use uuid::Uuid;
+
     use super::*;
 
     #[test]
@@ -815,5 +860,47 @@ mod tests {
             classify_relative_path("src/main.rs").expect("source"),
             AiPathClass::Normal
         );
+    }
+
+    #[test]
+    fn generated_directory_filters_do_not_hide_domain_directories() {
+        assert!(is_builtin_directory_excluded(
+            Path::new("target/debug/app.exe"),
+            false
+        ));
+        assert!(is_builtin_directory_excluded(
+            Path::new("src/bin/app.dll"),
+            false
+        ));
+        assert!(!is_builtin_directory_excluded(
+            Path::new("ViewModel/Target/TargetDetailWindow.xaml.cs"),
+            false
+        ));
+        assert!(!is_builtin_directory_excluded(
+            Path::new("Services/Build/BuildService.cs"),
+            false
+        ));
+    }
+
+    #[test]
+    fn text_reads_clamp_large_requests_and_return_continuation() {
+        let root = std::env::temp_dir().join(format!("atrisbridge-text-window-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("temp root");
+        let path = root.join("large.cs");
+        let source = (1..=2_505)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&path, source).expect("source file");
+
+        let window = read_text_window(&path, 1, 5_000).expect("bounded text window");
+        assert_eq!(window.end_line, 2_000);
+        assert_eq!(window.total_lines, 2_505);
+        assert!(window.truncated);
+        assert_eq!(window.next_start_line, Some(2_001));
+        assert!(window.content.starts_with("line 1\nline 2"));
+        assert!(window.content.ends_with("line 2000"));
+
+        fs::remove_dir_all(root).expect("cleanup temp root");
     }
 }
