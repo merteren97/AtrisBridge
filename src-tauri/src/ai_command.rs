@@ -268,7 +268,7 @@ fn run_ai_command_blocking(
             stderr_truncated: output.stderr_truncated,
             workspace_dirty_before,
             workspace_dirty_after,
-            runtime_cleanup_incomplete,
+            runtime_cleanup_incomplete: runtime_cleanup_incomplete,
             output_capture_incomplete: output.output_capture_incomplete,
             execution_policy: execution_policy(&session),
         })
@@ -1544,7 +1544,7 @@ mod tests {
         let signal = AtomicBool::new(false);
         assert!(!cancellation_requested(Some(&signal)));
         signal.store(true, Ordering::SeqCst);
-        assert!(cancellation_requested(Some(&signal));
+        assert!(cancellation_requested(Some(&signal)));
         assert!(!cancellation_requested(None));
     }
 
