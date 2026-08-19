@@ -22,6 +22,7 @@ use uuid::Uuid;
 use crate::{
     ai_gateway::{self, AiAuditEvent, AiSession},
     ai_git,
+    ai_output::TailPreservingBuffer,
     ai_workspace::canonical_workspace_root,
     storage::find_workspace,
     workspace_coordinator::{
@@ -31,8 +32,8 @@ use crate::{
 };
 
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
-const MAX_COMMAND_STDOUT_BYTES: usize = 256 * 1024;
-const MAX_COMMAND_STDERR_BYTES: usize = 256 * 1024;
+const MAX_COMMAND_STDOUT_BYTES: usize = 1024 * 1024;
+const MAX_COMMAND_STDERR_BYTES: usize = 1024 * 1024;
 const MAX_PROJECT_SCAN_ENTRIES: usize = 10_000;
 const MAX_PROJECT_SCAN_DEPTH: usize = 6;
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(40);
@@ -96,7 +97,7 @@ enum PipeKind {
 }
 
 enum PipeEvent {
-    Data(PipeKind, Vec<u8>),
+    Data(PipeKind, Vec<u8>, bool),
     Closed(PipeKind),
     Failed(PipeKind),
 }
@@ -267,7 +268,7 @@ fn run_ai_command_blocking(
             stderr_truncated: output.stderr_truncated,
             workspace_dirty_before,
             workspace_dirty_after,
-            runtime_cleanup_incomplete,
+            runtime_cleanup_incomplete: runtime_cleanup_incomplete,
             output_capture_incomplete: output.output_capture_incomplete,
             execution_policy: execution_policy(&session),
         })
@@ -1146,8 +1147,8 @@ fn collect_child_output(
         .take()
         .ok_or_else(|| "Could not capture command stderr.".to_string())?;
     let (sender, receiver) = mpsc::sync_channel::<PipeEvent>(PIPE_CHANNEL_CAPACITY);
-    let stdout_thread = spawn_pipe_reader(stdout, PipeKind::Stdout, sender.clone());
-    let stderr_thread = spawn_pipe_reader(stderr, PipeKind::Stderr, sender.clone());
+    let stdout_thread = spawn_pipe_reader(stdout, PipeKind::Stdout, stdout_max, sender.clone());
+    let stderr_thread = spawn_pipe_reader(stderr, PipeKind::Stderr, stderr_max, sender.clone());
     drop(sender);
 
     let started = Instant::now();
@@ -1156,7 +1157,7 @@ fn collect_child_output(
     let mut timed_out = false;
     let mut cancelled = false;
     loop {
-        drain_pipe_events(&receiver, &mut capture, stdout_max, stderr_max);
+        drain_pipe_events(&receiver, &mut capture);
         if cancellation_requested(cancel) {
             cancelled = true;
             break;
@@ -1181,7 +1182,7 @@ fn collect_child_output(
         && drain_started.elapsed() < OUTPUT_DRAIN_GRACE
     {
         match receiver.recv_timeout(PROCESS_POLL_INTERVAL) {
-            Ok(event) => apply_pipe_event(event, &mut capture, stdout_max, stderr_max),
+            Ok(event) => apply_pipe_event(event, &mut capture),
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 capture.stdout_closed = true;
@@ -1189,7 +1190,7 @@ fn collect_child_output(
             }
         }
     }
-    drain_pipe_events(&receiver, &mut capture, stdout_max, stderr_max);
+    drain_pipe_events(&receiver, &mut capture);
     let output_capture_incomplete = !(capture.stdout_closed && capture.stderr_closed);
     drop(receiver);
     if !output_capture_incomplete {
@@ -1224,25 +1225,25 @@ fn cancellation_requested(cancel: Option<&AtomicBool>) -> bool {
 fn spawn_pipe_reader<R: Read + Send + 'static>(
     mut reader: R,
     kind: PipeKind,
+    max_bytes: usize,
     sender: SyncSender<PipeEvent>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
+        let mut capture = TailPreservingBuffer::new(max_bytes);
         let mut buffer = [0u8; 8 * 1024];
         loop {
             match reader.read(&mut buffer) {
                 Ok(0) => {
+                    let (bytes, truncated) = capture.finish();
+                    let _ = sender.send(PipeEvent::Data(kind, bytes, truncated));
                     let _ = sender.send(PipeEvent::Closed(kind));
                     break;
                 }
-                Ok(read) => {
-                    if sender
-                        .send(PipeEvent::Data(kind, buffer[..read].to_vec()))
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
+                Ok(read) => capture.push(&buffer[..read]),
                 Err(_) => {
+                    capture.mark_truncated();
+                    let (bytes, truncated) = capture.finish();
+                    let _ = sender.send(PipeEvent::Data(kind, bytes, truncated));
                     let _ = sender.send(PipeEvent::Failed(kind));
                     break;
                 }
@@ -1251,42 +1252,24 @@ fn spawn_pipe_reader<R: Read + Send + 'static>(
     })
 }
 
-fn drain_pipe_events(
-    receiver: &Receiver<PipeEvent>,
-    capture: &mut CapturedOutput,
-    stdout_max: usize,
-    stderr_max: usize,
-) {
+fn drain_pipe_events(receiver: &Receiver<PipeEvent>, capture: &mut CapturedOutput) {
     loop {
         match receiver.try_recv() {
-            Ok(event) => apply_pipe_event(event, capture, stdout_max, stderr_max),
+            Ok(event) => apply_pipe_event(event, capture),
             Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
         }
     }
 }
 
-fn apply_pipe_event(
-    event: PipeEvent,
-    capture: &mut CapturedOutput,
-    stdout_max: usize,
-    stderr_max: usize,
-) {
+fn apply_pipe_event(event: PipeEvent, capture: &mut CapturedOutput) {
     match event {
-        PipeEvent::Data(PipeKind::Stdout, bytes) => {
-            append_bounded(
-                &mut capture.stdout,
-                &mut capture.stdout_truncated,
-                &bytes,
-                stdout_max,
-            );
+        PipeEvent::Data(PipeKind::Stdout, bytes, truncated) => {
+            capture.stdout = bytes;
+            capture.stdout_truncated |= truncated;
         }
-        PipeEvent::Data(PipeKind::Stderr, bytes) => {
-            append_bounded(
-                &mut capture.stderr,
-                &mut capture.stderr_truncated,
-                &bytes,
-                stderr_max,
-            );
+        PipeEvent::Data(PipeKind::Stderr, bytes, truncated) => {
+            capture.stderr = bytes;
+            capture.stderr_truncated |= truncated;
         }
         PipeEvent::Closed(PipeKind::Stdout) => capture.stdout_closed = true,
         PipeEvent::Closed(PipeKind::Stderr) => capture.stderr_closed = true,
@@ -1298,17 +1281,6 @@ fn apply_pipe_event(
             capture.stderr_truncated = true;
             capture.stderr_closed = true;
         }
-    }
-}
-
-fn append_bounded(stored: &mut Vec<u8>, truncated: &mut bool, bytes: &[u8], max: usize) {
-    let remaining = max.saturating_sub(stored.len());
-    let keep = remaining.min(bytes.len());
-    if keep > 0 {
-        stored.extend_from_slice(&bytes[..keep]);
-    }
-    if keep < bytes.len() {
-        *truncated = true;
     }
 }
 
@@ -1577,12 +1549,9 @@ mod tests {
     }
 
     #[test]
-    fn bounded_output_marks_truncation_without_exceeding_limit() {
-        let mut stored = vec![1, 2];
-        let mut truncated = false;
-        append_bounded(&mut stored, &mut truncated, &[3, 4, 5], 4);
-        assert_eq!(stored, vec![1, 2, 3, 4]);
-        assert!(truncated);
+    fn command_output_budget_is_one_megabyte_per_stream() {
+        assert_eq!(MAX_COMMAND_STDOUT_BYTES, 1024 * 1024);
+        assert_eq!(MAX_COMMAND_STDERR_BYTES, 1024 * 1024);
     }
 
     #[test]

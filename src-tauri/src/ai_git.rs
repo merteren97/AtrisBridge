@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 use crate::{
     ai_gateway::{self, AiAuditEvent, AiSession},
+    ai_output::TailPreservingBuffer,
     ai_workspace::{
         canonical_workspace_root, classify_relative_path, ensure_ai_path_allowed,
         normalize_relative_path, AiPathClass,
@@ -27,8 +28,8 @@ use crate::{
     },
 };
 
-const MAX_GIT_OUTPUT_BYTES: usize = 512 * 1024;
-const MAX_GIT_ERROR_BYTES: usize = 16 * 1024;
+const MAX_GIT_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_GIT_ERROR_BYTES: usize = 64 * 1024;
 const MAX_GIT_PATHS: usize = 200;
 const MAX_DIFF_PATHS: usize = 2_000;
 const MAX_LOG_LIMIT: u32 = 100;
@@ -1719,33 +1720,36 @@ fn capture_pipe<R: Read + Send + 'static>(
     max: usize,
 ) -> thread::JoinHandle<CapturedPipe> {
     thread::spawn(move || {
-        let mut stored = Vec::new();
+        let mut capture = TailPreservingBuffer::new(max);
         let mut buffer = [0u8; 8 * 1024];
-        let mut truncated = false;
         loop {
             match reader.read(&mut buffer) {
                 Ok(0) => break,
-                Ok(read) => {
-                    let remaining = max.saturating_sub(stored.len());
-                    let keep = remaining.min(read);
-                    if keep > 0 {
-                        stored.extend_from_slice(&buffer[..keep]);
-                    }
-                    if keep < read {
-                        truncated = true;
-                    }
-                }
+                Ok(read) => capture.push(&buffer[..read]),
                 Err(_) => {
-                    truncated = true;
+                    capture.mark_truncated();
                     break;
                 }
             }
         }
-        CapturedPipe {
-            bytes: stored,
-            truncated,
-        }
+        let (bytes, truncated) = capture.finish();
+        CapturedPipe { bytes, truncated }
     })
+}
+
+fn truncate_error_detail(value: &str, max_chars: usize) -> String {
+    let count = value.chars().count();
+    if count <= max_chars {
+        return value.to_string();
+    }
+    if max_chars <= 2 {
+        return value.chars().rev().take(max_chars).collect::<Vec<_>>().into_iter().rev().collect();
+    }
+    let tail = value
+        .chars()
+        .skip(count.saturating_sub(max_chars - 2))
+        .collect::<String>();
+    format!("… {tail}")
 }
 
 fn local_git_error(action: &str, output: &GitOutput) -> String {
@@ -1753,11 +1757,9 @@ fn local_git_error(action: &str, output: &GitOutput) -> String {
     if detail.is_empty() {
         detail = String::from_utf8_lossy(&output.stdout).trim().to_string();
     }
-    if detail.len() > 1_000 {
-        detail.truncate(1_000);
-    }
+    detail = truncate_error_detail(&detail, 1_000);
     if output.stderr_truncated || output.stdout_truncated {
-        detail.push_str(" [output truncated]");
+        detail.push_str(" [output truncated; tail preserved]");
     }
     if detail.is_empty() {
         format!("{action} (Git exit code {:?}).", output.code)
@@ -2021,5 +2023,20 @@ mod tests {
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].commit, "abc");
         assert_eq!(parsed[0].parents, vec!["parent"]);
+    }
+
+    #[test]
+    fn git_output_budgets_fit_remote_relay_headroom() {
+        assert_eq!(MAX_GIT_OUTPUT_BYTES, 2 * 1024 * 1024);
+        assert_eq!(MAX_GIT_ERROR_BYTES, 64 * 1024);
+    }
+
+    #[test]
+    fn git_error_detail_preserves_the_tail() {
+        let value = format!("{}TAIL", "x".repeat(2_000));
+        let truncated = truncate_error_detail(&value, 100);
+        assert!(truncated.starts_with("… "));
+        assert!(truncated.ends_with("TAIL"));
+        assert!(truncated.chars().count() <= 100);
     }
 }
