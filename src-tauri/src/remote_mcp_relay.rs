@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
+    time::Instant as StdInstant,
 };
 
 use futures_util::{
@@ -8,6 +9,7 @@ use futures_util::{
     FutureExt, SinkExt, StreamExt,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, State};
 use tokio::{
     sync::{mpsc, Semaphore},
@@ -37,6 +39,8 @@ const MAX_LOCAL_INFLIGHT: usize = 32;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const RELAY_READY_TIMEOUT: Duration = Duration::from_secs(15);
 const AUTH_CHECK_INTERVAL: Duration = Duration::from_secs(15);
+const WATCHDOG_INTERVAL: Duration = Duration::from_secs(10);
+const WATCHDOG_RESPONSE_TIMEOUT: Duration = Duration::from_secs(25);
 const SIGNED_OUT_RETRY: Duration = Duration::from_secs(5);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
 
@@ -58,6 +62,10 @@ struct RelayManagerRuntime {
     last_error: Option<String>,
     last_attempt_at: Option<String>,
     last_connected_at: Option<String>,
+    last_frame_at: Option<String>,
+    last_server_ping_at: Option<String>,
+    last_pong_at: Option<String>,
+    last_disconnect_code: Option<String>,
     reconnect_attempts: u32,
 }
 
@@ -80,6 +88,10 @@ pub struct RemoteMcpRelayStatus {
     pub last_error: Option<String>,
     pub last_attempt_at: Option<String>,
     pub last_connected_at: Option<String>,
+    pub last_frame_at: Option<String>,
+    pub last_server_ping_at: Option<String>,
+    pub last_pong_at: Option<String>,
+    pub last_disconnect_code: Option<String>,
     pub reconnect_attempts: u32,
 }
 
@@ -109,9 +121,9 @@ enum ConnectionExit {
     RemoteClosed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum RelayReadyOutcome {
-    Ready,
+    Ready(String),
     RestartRequested,
 }
 
@@ -158,6 +170,10 @@ fn status_snapshot(runtime: &RelayManagerRuntime) -> RemoteMcpRelayStatus {
         last_error: runtime.last_error.clone(),
         last_attempt_at: runtime.last_attempt_at.clone(),
         last_connected_at: runtime.last_connected_at.clone(),
+        last_frame_at: runtime.last_frame_at.clone(),
+        last_server_ping_at: runtime.last_server_ping_at.clone(),
+        last_pong_at: runtime.last_pong_at.clone(),
+        last_disconnect_code: runtime.last_disconnect_code.clone(),
         reconnect_attempts: runtime.reconnect_attempts,
     }
 }
@@ -260,6 +276,7 @@ fn mark_signed_out(manager: &RemoteMcpRelayManager) {
         runtime.state = RelayLifecycleState::SignedOut;
         runtime.clients.clear();
         runtime.last_error = None;
+        runtime.last_disconnect_code = None;
         runtime.reconnect_attempts = 0;
     }
 }
@@ -274,17 +291,43 @@ fn mark_connecting(manager: &RemoteMcpRelayManager) {
 
 fn mark_online(manager: &RemoteMcpRelayManager) {
     if let Ok(mut runtime) = manager.inner.lock() {
+        let now = chrono::Utc::now().to_rfc3339();
         runtime.state = RelayLifecycleState::Online;
-        runtime.last_connected_at = Some(chrono::Utc::now().to_rfc3339());
+        runtime.last_connected_at = Some(now.clone());
+        runtime.last_frame_at = Some(now);
         runtime.last_error = None;
+        runtime.last_disconnect_code = None;
         runtime.reconnect_attempts = 0;
     }
 }
 
-fn mark_reconnecting(manager: &RemoteMcpRelayManager, error: &str) {
+fn mark_reconnecting(manager: &RemoteMcpRelayManager, code: &str, error: &str) {
     if let Ok(mut runtime) = manager.inner.lock() {
         runtime.state = RelayLifecycleState::Reconnecting;
+        runtime.last_disconnect_code = Some(code.to_string());
         runtime.last_error = Some(remote_mcp_protocol::bounded_error(error));
+    }
+}
+
+fn record_frame(manager: &RemoteMcpRelayManager) {
+    if let Ok(mut runtime) = manager.inner.lock() {
+        runtime.last_frame_at = Some(chrono::Utc::now().to_rfc3339());
+    }
+}
+
+fn record_server_ping(manager: &RemoteMcpRelayManager) {
+    if let Ok(mut runtime) = manager.inner.lock() {
+        let now = chrono::Utc::now().to_rfc3339();
+        runtime.last_frame_at = Some(now.clone());
+        runtime.last_server_ping_at = Some(now);
+    }
+}
+
+fn record_pong(manager: &RemoteMcpRelayManager) {
+    if let Ok(mut runtime) = manager.inner.lock() {
+        let now = chrono::Utc::now().to_rfc3339();
+        runtime.last_frame_at = Some(now.clone());
+        runtime.last_pong_at = Some(now);
     }
 }
 
@@ -304,7 +347,7 @@ async fn relay_loop(
                 continue;
             }
             Err(error) => {
-                mark_reconnecting(&manager, &error);
+                mark_reconnecting(&manager, "credential_refresh_failed", &error);
                 eprintln!(
                     "AtrisBridge remote MCP credential refresh failed: {}",
                     remote_mcp_protocol::bounded_error(&error)
@@ -325,11 +368,17 @@ async fn relay_loop(
                     Ok(ConnectionExit::RemoteClosed) => {
                         mark_reconnecting(
                             &manager,
+                            "remote_closed",
                             "AtrisHub closed the remote MCP relay WebSocket.",
                         );
                     }
                     Err(error) => {
-                        mark_reconnecting(&manager, &error);
+                        let code = if error.contains("watchdog") {
+                            "desktop_watchdog_timeout"
+                        } else {
+                            "relay_disconnected"
+                        };
+                        mark_reconnecting(&manager, code, &error);
                         eprintln!(
                             "AtrisBridge remote MCP relay disconnected: {}",
                             remote_mcp_protocol::bounded_error(&error)
@@ -338,7 +387,7 @@ async fn relay_loop(
                 }
             }
             Err(error) => {
-                mark_reconnecting(&manager, &error);
+                mark_reconnecting(&manager, "connect_failed", &error);
                 eprintln!(
                     "AtrisBridge remote MCP relay connection failed: {}",
                     remote_mcp_protocol::bounded_error(&error)
@@ -398,22 +447,33 @@ async fn run_connection(
 ) -> Result<ConnectionExit, String> {
     let (mut writer, mut reader) = socket.split();
     match await_relay_ready(&mut writer, &mut reader, &credential, wake_rx).await? {
-        RelayReadyOutcome::Ready => mark_online(manager),
+        RelayReadyOutcome::Ready(connection_id) => {
+            send_writer_json(&mut writer, relay_capabilities(&connection_id)).await?;
+            mark_online(manager);
+        }
         RelayReadyOutcome::RestartRequested => return Ok(ConnectionExit::CredentialChanged),
     }
 
     let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<Message>(MAX_LOCAL_INFLIGHT * 2);
     let permits = Arc::new(Semaphore::new(MAX_LOCAL_INFLIGHT));
+    let (auth_result_tx, mut auth_result_rx) = mpsc::unbounded_channel::<Result<bool, String>>();
+    let mut auth_check_inflight = false;
     let mut auth_tick = interval(AUTH_CHECK_INTERVAL);
     auth_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     auth_tick.tick().await;
+    let mut watchdog_tick = interval(WATCHDOG_INTERVAL);
+    watchdog_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    watchdog_tick.tick().await;
+    let mut awaiting_pong_since: Option<StdInstant> = None;
 
     loop {
         let outgoing = outgoing_rx.recv().fuse();
         let incoming = reader.next().fuse();
         let auth = auth_tick.tick().fuse();
+        let auth_result = auth_result_rx.recv().fuse();
+        let watchdog = watchdog_tick.tick().fuse();
         let wake = wake_rx.recv().fuse();
-        futures_util::pin_mut!(outgoing, incoming, auth, wake);
+        futures_util::pin_mut!(outgoing, incoming, auth, auth_result, watchdog, wake);
 
         futures_util::select! {
             outgoing = outgoing => {
@@ -427,13 +487,20 @@ async fn run_connection(
                 let Some(incoming) = incoming else {
                     return Ok(ConnectionExit::RemoteClosed);
                 };
-                match incoming.map_err(|error| format!("Could not read AtrisHub relay WebSocket: {error}"))? {
+                let incoming = incoming
+                    .map_err(|error| format!("Could not read AtrisHub relay WebSocket: {error}"))?;
+                awaiting_pong_since = None;
+                match incoming {
                     Message::Text(text) => {
+                        record_frame(manager);
                         if text.len() > MAX_RELAY_PAYLOAD_BYTES {
                             return Err("AtrisHub relay request exceeded the Desktop safety bound.".into());
                         }
-                        let request: RelayRequest = serde_json::from_str(text.as_ref())
+                        let envelope: Value = serde_json::from_str(text.as_ref())
                             .map_err(|_| "AtrisHub relay sent invalid request JSON.".to_string())?;
+                        let request: RelayRequest = serde_json::from_value(envelope.clone())
+                            .map_err(|_| "AtrisHub relay sent an invalid request envelope.".to_string())?;
+                        send_writer_json(&mut writer, relay_delivery_ack(&envelope)?).await?;
                         let permit = match permits.clone().try_acquire_owned() {
                             Ok(value) => value,
                             Err(_) => {
@@ -472,19 +539,56 @@ async fn run_connection(
                         });
                     }
                     Message::Ping(payload) => {
+                        record_server_ping(manager);
                         writer.send(Message::Pong(payload)).await
                             .map_err(|error| format!("Could not answer AtrisHub relay heartbeat: {error}"))?;
                     }
-                    Message::Pong(_) => {}
+                    Message::Pong(_) => {
+                        record_pong(manager);
+                    }
                     Message::Close(frame) => return Err(close_message(frame.as_ref(), "after readiness")),
                     Message::Binary(_) => return Err("AtrisHub relay sent an unexpected binary payload.".into()),
-                    Message::Frame(_) => {}
+                    Message::Frame(_) => record_frame(manager),
                 }
             },
             _ = auth => {
-                if !credential_still_current(app.clone(), &credential).await? {
+                if !auth_check_inflight {
+                    auth_check_inflight = true;
+                    let auth_app = app.clone();
+                    let expected = credential.clone();
+                    let result_tx = auth_result_tx.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let result = credential_still_current(auth_app, &expected).await;
+                        let _ = result_tx.send(result);
+                    });
+                }
+            },
+            auth_result = auth_result => {
+                auth_check_inflight = false;
+                match auth_result {
+                    Some(Ok(true)) => {},
+                    Some(Ok(false)) => {
+                        let _ = writer.send(Message::Close(None)).await;
+                        return Ok(ConnectionExit::CredentialChanged);
+                    }
+                    Some(Err(error)) => {
+                        let _ = writer.send(Message::Close(None)).await;
+                        return Err(format!("AtrisHub credential watchdog failed: {error}"));
+                    }
+                    None => return Err("AtrisHub credential watchdog channel closed unexpectedly.".into()),
+                }
+            },
+            _ = watchdog => {
+                let now = StdInstant::now();
+                if watchdog_expired(awaiting_pong_since, now) {
                     let _ = writer.send(Message::Close(None)).await;
-                    return Ok(ConnectionExit::CredentialChanged);
+                    return Err("AtrisBridge relay watchdog timed out waiting for AtrisHub transport activity.".into());
+                }
+                if awaiting_pong_since.is_none() {
+                    let payload = Uuid::new_v4().as_bytes().to_vec();
+                    writer.send(Message::Ping(payload.into())).await
+                        .map_err(|error| format!("Could not send AtrisBridge relay watchdog ping: {error}"))?;
+                    awaiting_pong_since = Some(now);
                 }
             },
             wake = wake => {
@@ -496,6 +600,54 @@ async fn run_connection(
             },
         }
     }
+}
+
+fn watchdog_expired(waiting_since: Option<StdInstant>, now: StdInstant) -> bool {
+    waiting_since
+        .is_some_and(|started| now.saturating_duration_since(started) >= WATCHDOG_RESPONSE_TIMEOUT)
+}
+
+fn relay_capabilities(connection_id: &str) -> Value {
+    json!({
+        "type": "relay_capabilities",
+        "version": 1,
+        "deliveryAck": true,
+        "connectionId": connection_id,
+    })
+}
+
+fn relay_delivery_ack(envelope: &Value) -> Result<Value, String> {
+    let request_id = required_uuid_v4_field(envelope, "requestId")?;
+    let connection_id = required_uuid_v4_field(envelope, "connectionId")?;
+    Ok(json!({
+        "type": "relay_ack",
+        "version": 1,
+        "requestId": request_id,
+        "connectionId": connection_id,
+    }))
+}
+
+fn required_uuid_v4_field<'a>(value: &'a Value, field: &str) -> Result<&'a str, String> {
+    let text = value
+        .get(field)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("AtrisHub relay request is missing {field}."))?;
+    if !canonical_uuid_v4(text) {
+        return Err(format!("AtrisHub relay request {field} is invalid."));
+    }
+    Ok(text)
+}
+
+async fn send_writer_json(writer: &mut RelayWriter, value: Value) -> Result<(), String> {
+    let encoded = serde_json::to_string(&value)
+        .map_err(|error| format!("Could not encode AtrisHub relay control message: {error}"))?;
+    if encoded.len() > 16 * 1024 {
+        return Err("AtrisBridge relay control message exceeded the safety bound.".into());
+    }
+    writer
+        .send(Message::Text(encoded.into()))
+        .await
+        .map_err(|error| format!("Could not write AtrisHub relay control message: {error}"))
 }
 
 async fn await_relay_ready(
@@ -522,7 +674,7 @@ async fn await_relay_ready(
                             let ready: RelayReady = serde_json::from_str(text.as_ref())
                                 .map_err(|_| "AtrisHub relay did not return a valid readiness envelope.".to_string())?;
                             validate_relay_ready(credential, &ready)?;
-                            return Ok(RelayReadyOutcome::Ready);
+                            return Ok(RelayReadyOutcome::Ready(ready.connection_id));
                         }
                         Message::Ping(payload) => {
                             writer.send(Message::Pong(payload)).await
@@ -604,7 +756,7 @@ fn same_credential(left: &DesktopSessionCredential, right: &DesktopSessionCreden
         && left.access_token == right.access_token
 }
 
-async fn send_json(sender: &mpsc::Sender<Message>, value: serde_json::Value) -> Result<(), String> {
+async fn send_json(sender: &mpsc::Sender<Message>, value: Value) -> Result<(), String> {
     let encoded = serde_json::to_string(&value)
         .map_err(|error| format!("Could not encode AtrisHub relay response: {error}"))?;
     if encoded.len() > MAX_RELAY_PAYLOAD_BYTES {
@@ -656,5 +808,34 @@ mod tests {
             ..ready
         };
         assert!(validate_relay_ready(&current, &stale).is_err());
+    }
+
+    #[test]
+    fn watchdog_expires_only_after_the_response_deadline() {
+        let started = StdInstant::now();
+        assert!(!watchdog_expired(
+            Some(started),
+            started + WATCHDOG_RESPONSE_TIMEOUT - Duration::from_millis(1)
+        ));
+        assert!(watchdog_expired(
+            Some(started),
+            started + WATCHDOG_RESPONSE_TIMEOUT
+        ));
+        assert!(!watchdog_expired(None, started + WATCHDOG_RESPONSE_TIMEOUT));
+    }
+
+    #[test]
+    fn delivery_ack_is_fenced_to_request_and_connection() {
+        let envelope = json!({
+            "requestId": "33333333-3333-4333-8333-333333333333",
+            "connectionId": "44444444-4444-4444-8444-444444444444",
+        });
+        let acknowledgement = relay_delivery_ack(&envelope).expect("delivery acknowledgement");
+        assert_eq!(acknowledgement["type"], "relay_ack");
+        assert_eq!(acknowledgement["version"], 1);
+        assert_eq!(acknowledgement["requestId"], envelope["requestId"]);
+        assert_eq!(acknowledgement["connectionId"], envelope["connectionId"]);
+        let capabilities = relay_capabilities(envelope["connectionId"].as_str().unwrap());
+        assert_eq!(capabilities["deliveryAck"], true);
     }
 }
