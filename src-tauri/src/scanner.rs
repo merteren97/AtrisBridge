@@ -257,6 +257,17 @@ fn is_builtin_directory_ignored(component: &str) -> bool {
             .any(|ignored| component == *ignored)
 }
 
+fn has_builtin_ignored_directory(relative: &Path, is_dir: bool) -> bool {
+    let mut components = relative
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .collect::<Vec<_>>();
+    if !is_dir {
+        components.pop();
+    }
+    components.into_iter().any(is_builtin_directory_ignored)
+}
+
 fn is_builtin_ignored(relative: &Path, is_dir: bool) -> bool {
     if !is_dir {
         if let Some(name) = relative.file_name().and_then(|value| value.to_str()) {
@@ -268,11 +279,7 @@ fn is_builtin_ignored(relative: &Path, is_dir: bool) -> bool {
             }
         }
     }
-    if relative
-        .components()
-        .filter_map(|component| component.as_os_str().to_str())
-        .any(is_builtin_directory_ignored)
-    {
+    if has_builtin_ignored_directory(relative, is_dir) {
         return true;
     }
 
@@ -365,6 +372,7 @@ mod tests {
     fn generated_directory_filters_do_not_hide_domain_directories() {
         assert!(is_builtin_ignored(Path::new("target/debug/app.exe"), false));
         assert!(is_builtin_ignored(Path::new("src/bin/app.dll"), false));
+        assert!(!is_builtin_ignored(Path::new("target"), false));
         assert!(!is_builtin_ignored(
             Path::new("ViewModel/Target/TargetDetailWindow.xaml.cs"),
             false
@@ -408,11 +416,10 @@ mod tests {
         assert!(is_path_ignored_for_sync(&root, "private/customer.txt").expect("custom directory"));
         assert!(is_path_ignored_for_sync(&root, "cache/data.generated").expect("custom extension"));
         assert!(!is_path_ignored_for_sync(&root, "src/main.rs").expect("allowed source"));
-        assert!(!is_path_ignored_for_sync(
-            &root,
-            "ViewModel/Target/TargetDetailWindow.xaml.cs"
-        )
-        .expect("domain target directory"));
+        assert!(
+            !is_path_ignored_for_sync(&root, "ViewModel/Target/TargetDetailWindow.xaml.cs")
+                .expect("domain target directory")
+        );
 
         fs::remove_dir_all(root).expect("cleanup temp root");
     }
