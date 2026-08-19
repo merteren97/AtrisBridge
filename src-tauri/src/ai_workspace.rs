@@ -233,7 +233,7 @@ fn read_text_window(
             continue;
         }
 
-        let separator_bytes = if content.is_empty() { 0 } else { 1 };
+        let separator_bytes: usize = if content.is_empty() { 0 } else { 1 };
         let required_bytes = separator_bytes.saturating_add(line.len());
         if required_bytes > MAX_TEXT_RESPONSE_BYTES.saturating_sub(content.len()) {
             if content.is_empty() {
