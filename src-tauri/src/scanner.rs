@@ -12,11 +12,8 @@ use crate::models::{ScanFile, ScanReport};
 
 const PREVIEW_LIMIT: usize = 250;
 const HASH_BUFFER_SIZE: usize = 64 * 1024;
-const BUILTIN_DIRECTORY_IGNORES: &[&str] = &[
-    ".git",
-    ".vs",
-    ".idea",
-    ".next",
+const BUILTIN_CASE_INSENSITIVE_DIRECTORY_IGNORES: &[&str] = &[".git", ".vs", ".idea", ".next"];
+const BUILTIN_GENERATED_DIRECTORY_IGNORES: &[&str] = &[
     "node_modules",
     "dist",
     "build",
@@ -251,6 +248,15 @@ fn is_custom_ignored(path: &Path, is_dir: bool, matcher: Option<&Gitignore>) -> 
         .unwrap_or(false)
 }
 
+fn is_builtin_directory_ignored(component: &str) -> bool {
+    BUILTIN_CASE_INSENSITIVE_DIRECTORY_IGNORES
+        .iter()
+        .any(|ignored| component.eq_ignore_ascii_case(ignored))
+        || BUILTIN_GENERATED_DIRECTORY_IGNORES
+            .iter()
+            .any(|ignored| component == *ignored)
+}
+
 fn is_builtin_ignored(relative: &Path, is_dir: bool) -> bool {
     if !is_dir {
         if let Some(name) = relative.file_name().and_then(|value| value.to_str()) {
@@ -265,11 +271,7 @@ fn is_builtin_ignored(relative: &Path, is_dir: bool) -> bool {
     if relative
         .components()
         .filter_map(|component| component.as_os_str().to_str())
-        .any(|component| {
-            BUILTIN_DIRECTORY_IGNORES
-                .iter()
-                .any(|ignored| component.eq_ignore_ascii_case(ignored))
-        })
+        .any(is_builtin_directory_ignored)
     {
         return true;
     }
@@ -360,6 +362,20 @@ mod tests {
     }
 
     #[test]
+    fn generated_directory_filters_do_not_hide_domain_directories() {
+        assert!(is_builtin_ignored(Path::new("target/debug/app.exe"), false));
+        assert!(is_builtin_ignored(Path::new("src/bin/app.dll"), false));
+        assert!(!is_builtin_ignored(
+            Path::new("ViewModel/Target/TargetDetailWindow.xaml.cs"),
+            false
+        ));
+        assert!(!is_builtin_ignored(
+            Path::new("Services/Build/BuildService.cs"),
+            false
+        ));
+    }
+
+    #[test]
     fn blocks_known_secret_extensions() {
         assert!(is_builtin_ignored(
             Path::new("certificates/client.pfx"),
@@ -392,6 +408,11 @@ mod tests {
         assert!(is_path_ignored_for_sync(&root, "private/customer.txt").expect("custom directory"));
         assert!(is_path_ignored_for_sync(&root, "cache/data.generated").expect("custom extension"));
         assert!(!is_path_ignored_for_sync(&root, "src/main.rs").expect("allowed source"));
+        assert!(!is_path_ignored_for_sync(
+            &root,
+            "ViewModel/Target/TargetDetailWindow.xaml.cs"
+        )
+        .expect("domain target directory"));
 
         fs::remove_dir_all(root).expect("cleanup temp root");
     }
