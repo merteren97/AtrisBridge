@@ -3,6 +3,8 @@ mod ai_changeset;
 mod ai_command;
 mod ai_gateway;
 mod ai_git;
+mod ai_limits;
+mod ai_output;
 mod ai_task;
 mod ai_workspace;
 mod ai_worktree_cleanup;
