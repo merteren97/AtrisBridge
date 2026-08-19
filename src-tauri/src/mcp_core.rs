@@ -706,10 +706,7 @@ mod tests {
             .iter()
             .find(|tool| tool.name == "workspace_search")
             .expect("workspace_search");
-        assert_eq!(
-            search.input_schema["properties"]["limit"]["maximum"],
-            500
-        );
+        assert_eq!(search.input_schema["properties"]["limit"]["maximum"], 500);
     }
 
     #[test]
