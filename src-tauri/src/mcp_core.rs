@@ -141,15 +141,23 @@ pub fn tool_catalog() -> Vec<McpToolContract> {
         tool(
             "workspace_read_text",
             "Read text file",
-            "Read a bounded UTF-8 line window from a workspace-relative file. Sensitive files still require sensitive.read.",
+            "Read a UTF-8 workspace-relative file in windows of at most 2,000 lines. Wider requested ranges are clamped instead of rejected; when file content remains, the result includes nextStartLine for continuation. Sensitive files still require sensitive.read.",
             &["workspace.read"],
             false,
             schema(
                 json!({
                     "sessionId": session_id_schema(),
                     "relativePath": relative_path_schema(),
-                    "startLine": {"type": ["integer", "null"], "minimum": 1},
-                    "endLine": {"type": ["integer", "null"], "minimum": 1}
+                    "startLine": {
+                        "type": ["integer", "null"],
+                        "minimum": 1,
+                        "description": "Optional 1-based first line. Omit to start at line 1."
+                    },
+                    "endLine": {
+                        "type": ["integer", "null"],
+                        "minimum": 1,
+                        "description": "Optional 1-based requested last line. AtrisBridge returns at most 2,000 lines per call and clamps wider ranges, returning nextStartLine when more file content remains."
+                    }
                 }),
                 &["sessionId", "relativePath"],
             ),
@@ -166,7 +174,7 @@ pub fn tool_catalog() -> Vec<McpToolContract> {
                 json!({
                     "sessionId": session_id_schema(),
                     "query": {"type": "string", "minLength": 1, "maxLength": 512},
-                    "limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 200},
+                    "limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 500},
                     "includeSensitive": {"type": "boolean", "default": false}
                 }),
                 &["sessionId", "query"],
@@ -231,7 +239,7 @@ pub fn tool_catalog() -> Vec<McpToolContract> {
             "List bounded changeset metadata visible to the current AtrisBridge AI session.",
             &["workspace.read"],
             false,
-            session_limit_schema(),
+            session_limit_schema(200),
             read_only(false),
             None,
         ),
@@ -304,7 +312,7 @@ pub fn tool_catalog() -> Vec<McpToolContract> {
             "Read a bounded commit log for the session worktree.",
             &["git.local"],
             false,
-            session_limit_schema(),
+            session_limit_schema(100),
             read_only(false),
             None,
         ),
@@ -514,11 +522,11 @@ fn session_only_schema() -> Value {
     schema(json!({"sessionId": session_id_schema()}), &["sessionId"])
 }
 
-fn session_limit_schema() -> Value {
+fn session_limit_schema(maximum: u32) -> Value {
     schema(
         json!({
             "sessionId": session_id_schema(),
-            "limit": {"type": "integer", "minimum": 1, "maximum": 200}
+            "limit": {"type": "integer", "minimum": 1, "maximum": maximum}
         }),
         &["sessionId"],
     )
@@ -678,6 +686,36 @@ mod tests {
         assert!(search.input_schema["properties"]
             .get("pathPrefix")
             .is_none());
+    }
+
+    #[test]
+    fn workspace_contract_exposes_runtime_read_and_search_limits() {
+        let tools = tool_catalog();
+        let read = tools
+            .iter()
+            .find(|tool| tool.name == "workspace_read_text")
+            .expect("workspace_read_text");
+        assert!(read.description.contains("2,000"));
+        assert!(read.description.contains("clamped"));
+        assert!(read.description.contains("nextStartLine"));
+        assert!(read.input_schema["properties"]["endLine"]["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("2,000")));
+
+        let search = tools
+            .iter()
+            .find(|tool| tool.name == "workspace_search")
+            .expect("workspace_search");
+        assert_eq!(search.input_schema["properties"]["limit"]["maximum"], 500);
+    }
+
+    #[test]
+    fn git_log_contract_matches_runtime_limit() {
+        let tool = tool_catalog()
+            .into_iter()
+            .find(|tool| tool.name == "git_log")
+            .expect("git_log");
+        assert_eq!(tool.input_schema["properties"]["limit"]["maximum"], 100);
     }
 
     #[test]
