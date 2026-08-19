@@ -112,7 +112,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -128,25 +128,76 @@ jobs:
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
-          workspaces: src-tauri -> target
+          workspaces: |
+            src-tauri -> target
+            src-tauri/mcp-companion -> target
           shared-key: release-${{ matrix.releaseTarget }}
           cache-on-failure: true
+
+      - name: Select Linux package cache epoch
+        if: startsWith(matrix.os, 'ubuntu')
+        id: linux-package-cache
+        shell: bash
+        run: echo "epoch=$(date -u +'%G-%V')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Linux package cache
+        if: startsWith(matrix.os, 'ubuntu')
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ~/.cache/atrisbridge/apt-debs
+          key: atrisbridge-apt-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.linux-package-cache.outputs.epoch }}
+          restore-keys: |
+            atrisbridge-apt-v1-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Install Linux desktop dependencies
         if: startsWith(matrix.os, 'ubuntu')
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            unzip \
-            libsecret-1-dev \
-            libxdo-dev \
+          cache_dir="$HOME/.cache/atrisbridge/apt-debs"
+          mkdir -p "$cache_dir"
+          shopt -s nullglob
+
+          cached_debs=("$cache_dir"/*.deb)
+          if ((${#cached_debs[@]} > 0)); then
+            sudo cp -f "${cached_debs[@]}" /var/cache/apt/archives/
+          fi
+
+          sudo apt-get \
+            -o Acquire::Retries=5 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30 \
+            update
+
+          packages=(
+            libwebkit2gtk-4.1-dev
+            libayatana-appindicator3-dev
+            librsvg2-dev
+            patchelf
+            unzip
+            libsecret-1-dev
+            libxdo-dev
             libxkbcommon-dev
+          )
+
+          sudo apt-get \
+            -o Acquire::Retries=5 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30 \
+            install -y --download-only --no-install-recommends "${packages[@]}"
+
+          sudo apt-get autoclean
+          downloaded_debs=(/var/cache/apt/archives/*.deb)
+          if ((${#downloaded_debs[@]} > 0)); then
+            sudo cp -f "${downloaded_debs[@]}" "$cache_dir"/
+            sudo chown -R "$(id -u):$(id -g)" "$cache_dir"
+          fi
+
+          sudo apt-get \
+            -o Acquire::Retries=5 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30 \
+            install -y --no-install-recommends "${packages[@]}"
 
       - name: Install locked dependencies
         run: npm ci --include=dev --include=optional --prefer-offline --no-audit --no-fund
