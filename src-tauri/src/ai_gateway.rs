@@ -478,7 +478,7 @@ pub fn authorize_session(
     validate_capability(capability)?;
     let connection = open_ai_database(app)?;
     expire_sessions(&connection)?;
-    let session = load_session(&connection, session_id)?
+    let mut session = load_session(&connection, session_id)?
         .ok_or_else(|| "AI session was not found.".to_string())?;
     if session.status != "active" {
         return Err(format!(
@@ -487,9 +487,26 @@ pub fn authorize_session(
         ));
     }
     if !session.capabilities.iter().any(|value| value == capability) {
-        return Err(format!(
-            "AI session is not authorized for capability '{capability}'."
-        ));
+        if !grant_persistently_allowed_capability(&connection, &session, capability)? {
+            return Err(format!(
+                "AI session is not authorized for capability '{capability}'."
+            ));
+        }
+        session.capabilities = load_session_capabilities(&connection, session_id)?;
+        record_audit_with_connection(
+            &connection,
+            AiAuditEvent {
+                session_id: Some(session_id),
+                client_id: &session.client_id,
+                workspace_id: &session.workspace_id,
+                capability: Some(capability),
+                tool_name: "session.capability_refresh",
+                outcome: "success",
+                duration_ms: None,
+                operation_id: None,
+                detail_code: Some("persistent_rule"),
+            },
+        )?;
     }
     connection
         .execute(
@@ -620,6 +637,34 @@ fn effective_rule(
     capability: &str,
 ) -> Result<AiPermissionRule, String> {
     Ok(permission_record(connection, workspace_id, client_id, capability)?.rule)
+}
+
+fn grant_persistently_allowed_capability(
+    connection: &Connection,
+    session: &AiSession,
+    capability: &str,
+) -> Result<bool, String> {
+    let inserted = connection
+        .execute(
+            "INSERT INTO ai_session_capabilities (session_id, capability, source)
+             SELECT ?1, ?2, 'persistent_rule'
+             WHERE EXISTS (
+                 SELECT 1 FROM ai_permission_rules
+                 WHERE workspace_id = ?3
+                   AND client_id = ?4
+                   AND capability = ?2
+                   AND rule = 'allow'
+             )
+             ON CONFLICT(session_id, capability) DO NOTHING",
+            params![
+                session.id,
+                capability,
+                session.workspace_id,
+                session.client_id
+            ],
+        )
+        .map_err(|error| format!("Could not refresh AI session capability: {error}"))?;
+    Ok(inserted > 0)
 }
 
 fn load_session(connection: &Connection, session_id: &str) -> Result<Option<AiSession>, String> {
@@ -825,6 +870,24 @@ mod tests {
         connection
     }
 
+    fn insert_active_session(connection: &Connection, session_id: &str) -> AiSession {
+        let now = Utc::now();
+        let created_at = now.to_rfc3339();
+        let expires_at = (now + ChronoDuration::minutes(60)).to_rfc3339();
+        connection
+            .execute(
+                "INSERT INTO ai_sessions (
+                    id, client_id, workspace_id, mode, status,
+                    created_at, last_activity_at, expires_at
+                 ) VALUES (?1, 'chatgpt', 'ws-1', 'direct', 'active', ?2, ?2, ?3)",
+                params![session_id, created_at, expires_at],
+            )
+            .expect("session");
+        load_session(connection, session_id)
+            .expect("load session")
+            .expect("session exists")
+    }
+
     #[test]
     fn unknown_permissions_default_to_ask() {
         let connection = test_database();
@@ -832,6 +895,48 @@ mod tests {
             .expect("permission");
         assert_eq!(record.rule, AiPermissionRule::Ask);
         assert!(!record.explicit);
+    }
+
+    #[test]
+    fn persistent_allow_can_refresh_an_existing_session_capability() {
+        let connection = test_database();
+        let session = insert_active_session(&connection, "session-allow");
+        connection
+            .execute(
+                "INSERT INTO ai_permission_rules (
+                    workspace_id, client_id, capability, rule, created_at, updated_at
+                 ) VALUES ('ws-1', 'chatgpt', 'command.execute', 'allow', 'now', 'now')",
+                [],
+            )
+            .expect("permission");
+
+        assert!(grant_persistently_allowed_capability(
+            &connection,
+            &session,
+            "command.execute"
+        )
+        .expect("refresh"));
+        assert!(load_session_capabilities(&connection, &session.id)
+            .expect("capabilities")
+            .iter()
+            .any(|capability| capability == "command.execute"));
+    }
+
+    #[test]
+    fn default_ask_does_not_refresh_an_existing_session_capability() {
+        let connection = test_database();
+        let session = insert_active_session(&connection, "session-ask");
+
+        assert!(!grant_persistently_allowed_capability(
+            &connection,
+            &session,
+            "command.execute"
+        )
+        .expect("refresh"));
+        assert!(!load_session_capabilities(&connection, &session.id)
+            .expect("capabilities")
+            .iter()
+            .any(|capability| capability == "command.execute"));
     }
 
     #[test]
