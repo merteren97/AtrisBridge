@@ -54,6 +54,10 @@ export interface RemoteMcpRelayStatus {
   lastError: string | null;
   lastAttemptAt: string | null;
   lastConnectedAt: string | null;
+  lastFrameAt: string | null;
+  lastServerPingAt: string | null;
+  lastPongAt: string | null;
+  lastDisconnectCode: string | null;
   reconnectAttempts: number;
 }
 
