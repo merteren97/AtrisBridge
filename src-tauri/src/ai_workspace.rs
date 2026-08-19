@@ -172,7 +172,8 @@ pub fn ai_read_text_file(
             return Err("startLine is 1-based and must be at least 1.".into());
         }
         let default_span = u64::try_from(MAX_LINE_WINDOW.saturating_sub(1)).unwrap_or(u64::MAX);
-        let requested_end = end_line.unwrap_or_else(|| requested_start.saturating_add(default_span));
+        let requested_end =
+            end_line.unwrap_or_else(|| requested_start.saturating_add(default_span));
         if requested_end < requested_start {
             return Err("endLine must be greater than or equal to startLine.".into());
         }
@@ -204,10 +205,15 @@ pub fn ai_read_text_file(
     result
 }
 
-fn read_text_window(path: &Path, requested_start: u64, requested_end: u64) -> Result<TextWindow, String> {
+fn read_text_window(
+    path: &Path,
+    requested_start: u64,
+    requested_end: u64,
+) -> Result<TextWindow, String> {
     let max_span = u64::try_from(MAX_LINE_WINDOW.saturating_sub(1)).unwrap_or(u64::MAX);
     let effective_end = requested_end.min(requested_start.saturating_add(max_span));
-    let file = File::open(path).map_err(|error| format!("Could not read workspace file: {error}"))?;
+    let file =
+        File::open(path).map_err(|error| format!("Could not read workspace file: {error}"))?;
     let reader = BufReader::new(file);
     let mut content = String::new();
     let mut total_lines = 0u64;
@@ -227,7 +233,7 @@ fn read_text_window(path: &Path, requested_start: u64, requested_end: u64) -> Re
             continue;
         }
 
-        let separator_bytes = usize::from(!content.is_empty());
+        let separator_bytes = if content.is_empty() { 0 } else { 1 };
         let required_bytes = separator_bytes.saturating_add(line.len());
         if required_bytes > MAX_TEXT_RESPONSE_BYTES.saturating_sub(content.len()) {
             if content.is_empty() {
