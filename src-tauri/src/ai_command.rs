@@ -22,6 +22,7 @@ use uuid::Uuid;
 use crate::{
     ai_gateway::{self, AiAuditEvent, AiSession},
     ai_git,
+    ai_output::append_tail_preserving,
     ai_workspace::canonical_workspace_root,
     storage::find_workspace,
     workspace_coordinator::{
@@ -31,8 +32,8 @@ use crate::{
 };
 
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
-const MAX_COMMAND_STDOUT_BYTES: usize = 256 * 1024;
-const MAX_COMMAND_STDERR_BYTES: usize = 256 * 1024;
+const MAX_COMMAND_STDOUT_BYTES: usize = 1024 * 1024;
+const MAX_COMMAND_STDERR_BYTES: usize = 1024 * 1024;
 const MAX_PROJECT_SCAN_ENTRIES: usize = 10_000;
 const MAX_PROJECT_SCAN_DEPTH: usize = 6;
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(40);
@@ -996,7 +997,6 @@ fn configure_environment(
         .env("NPM_CONFIG_AUDIT", "false")
         .env("NPM_CONFIG_FUND", "false")
         .env("PIP_DISABLE_PIP_VERSION_CHECK", "1");
-
     preserve_platform_environment(command);
     preserve_toolchain_environment(command, root, primary_root);
     Ok(())
@@ -1302,14 +1302,7 @@ fn apply_pipe_event(
 }
 
 fn append_bounded(stored: &mut Vec<u8>, truncated: &mut bool, bytes: &[u8], max: usize) {
-    let remaining = max.saturating_sub(stored.len());
-    let keep = remaining.min(bytes.len());
-    if keep > 0 {
-        stored.extend_from_slice(&bytes[..keep]);
-    }
-    if keep < bytes.len() {
-        *truncated = true;
-    }
+    append_tail_preserving(stored, truncated, bytes, max);
 }
 
 fn output_text(bytes: &[u8]) -> String {
@@ -1577,11 +1570,15 @@ mod tests {
     }
 
     #[test]
-    fn bounded_output_marks_truncation_without_exceeding_limit() {
-        let mut stored = vec![1, 2];
+    fn bounded_output_preserves_latest_tail_without_exceeding_limit() {
+        let mut stored = Vec::new();
         let mut truncated = false;
-        append_bounded(&mut stored, &mut truncated, &[3, 4, 5], 4);
-        assert_eq!(stored, vec![1, 2, 3, 4]);
+        append_bounded(&mut stored, &mut truncated, b"HEAD-0123456789", 96);
+        append_bounded(&mut stored, &mut truncated, &vec![b'x'; 160], 96);
+        append_bounded(&mut stored, &mut truncated, b"-LATEST-TAIL", 96);
+        assert!(stored.len() <= 96);
+        assert!(stored.starts_with(b"HEAD-"));
+        assert!(stored.ends_with(b"-LATEST-TAIL"));
         assert!(truncated);
     }
 
