@@ -9,6 +9,7 @@ use futures_util::{
     FutureExt, SinkExt, StreamExt,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, State};
 use tokio::{
     sync::{mpsc, Semaphore},
@@ -120,9 +121,9 @@ enum ConnectionExit {
     RemoteClosed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum RelayReadyOutcome {
-    Ready,
+    Ready(String),
     RestartRequested,
 }
 
@@ -446,7 +447,10 @@ async fn run_connection(
 ) -> Result<ConnectionExit, String> {
     let (mut writer, mut reader) = socket.split();
     match await_relay_ready(&mut writer, &mut reader, &credential, wake_rx).await? {
-        RelayReadyOutcome::Ready => mark_online(manager),
+        RelayReadyOutcome::Ready(connection_id) => {
+            send_writer_json(&mut writer, relay_capabilities(&connection_id)).await?;
+            mark_online(manager);
+        }
         RelayReadyOutcome::RestartRequested => return Ok(ConnectionExit::CredentialChanged),
     }
 
@@ -492,8 +496,11 @@ async fn run_connection(
                         if text.len() > MAX_RELAY_PAYLOAD_BYTES {
                             return Err("AtrisHub relay request exceeded the Desktop safety bound.".into());
                         }
-                        let request: RelayRequest = serde_json::from_str(text.as_ref())
+                        let envelope: Value = serde_json::from_str(text.as_ref())
                             .map_err(|_| "AtrisHub relay sent invalid request JSON.".to_string())?;
+                        let request: RelayRequest = serde_json::from_value(envelope.clone())
+                            .map_err(|_| "AtrisHub relay sent an invalid request envelope.".to_string())?;
+                        send_writer_json(&mut writer, relay_delivery_ack(&envelope)?).await?;
                         let permit = match permits.clone().try_acquire_owned() {
                             Ok(value) => value,
                             Err(_) => {
@@ -599,6 +606,49 @@ fn watchdog_expired(waiting_since: Option<StdInstant>, now: StdInstant) -> bool 
     waiting_since.is_some_and(|started| now.saturating_duration_since(started) >= WATCHDOG_RESPONSE_TIMEOUT)
 }
 
+fn relay_capabilities(connection_id: &str) -> Value {
+    json!({
+        "type": "relay_capabilities",
+        "version": 1,
+        "deliveryAck": true,
+        "connectionId": connection_id,
+    })
+}
+
+fn relay_delivery_ack(envelope: &Value) -> Result<Value, String> {
+    let request_id = required_uuid_v4_field(envelope, "requestId")?;
+    let connection_id = required_uuid_v4_field(envelope, "connectionId")?;
+    Ok(json!({
+        "type": "relay_ack",
+        "version": 1,
+        "requestId": request_id,
+        "connectionId": connection_id,
+    }))
+}
+
+fn required_uuid_v4_field<'a>(value: &'a Value, field: &str) -> Result<&'a str, String> {
+    let text = value
+        .get(field)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("AtrisHub relay request is missing {field}."))?;
+    if !canonical_uuid_v4(text) {
+        return Err(format!("AtrisHub relay request {field} is invalid."));
+    }
+    Ok(text)
+}
+
+async fn send_writer_json(writer: &mut RelayWriter, value: Value) -> Result<(), String> {
+    let encoded = serde_json::to_string(&value)
+        .map_err(|error| format!("Could not encode AtrisHub relay control message: {error}"))?;
+    if encoded.len() > 16 * 1024 {
+        return Err("AtrisBridge relay control message exceeded the safety bound.".into());
+    }
+    writer
+        .send(Message::Text(encoded.into()))
+        .await
+        .map_err(|error| format!("Could not write AtrisHub relay control message: {error}"))
+}
+
 async fn await_relay_ready(
     writer: &mut RelayWriter,
     reader: &mut RelayReader,
@@ -623,7 +673,7 @@ async fn await_relay_ready(
                             let ready: RelayReady = serde_json::from_str(text.as_ref())
                                 .map_err(|_| "AtrisHub relay did not return a valid readiness envelope.".to_string())?;
                             validate_relay_ready(credential, &ready)?;
-                            return Ok(RelayReadyOutcome::Ready);
+                            return Ok(RelayReadyOutcome::Ready(ready.connection_id));
                         }
                         Message::Ping(payload) => {
                             writer.send(Message::Pong(payload)).await
@@ -705,7 +755,7 @@ fn same_credential(left: &DesktopSessionCredential, right: &DesktopSessionCreden
         && left.access_token == right.access_token
 }
 
-async fn send_json(sender: &mpsc::Sender<Message>, value: serde_json::Value) -> Result<(), String> {
+async fn send_json(sender: &mpsc::Sender<Message>, value: Value) -> Result<(), String> {
     let encoded = serde_json::to_string(&value)
         .map_err(|error| format!("Could not encode AtrisHub relay response: {error}"))?;
     if encoded.len() > MAX_RELAY_PAYLOAD_BYTES {
@@ -771,5 +821,20 @@ mod tests {
             started + WATCHDOG_RESPONSE_TIMEOUT
         ));
         assert!(!watchdog_expired(None, started + WATCHDOG_RESPONSE_TIMEOUT));
+    }
+
+    #[test]
+    fn delivery_ack_is_fenced_to_request_and_connection() {
+        let envelope = json!({
+            "requestId": "33333333-3333-4333-8333-333333333333",
+            "connectionId": "44444444-4444-4444-8444-444444444444",
+        });
+        let acknowledgement = relay_delivery_ack(&envelope).expect("delivery acknowledgement");
+        assert_eq!(acknowledgement["type"], "relay_ack");
+        assert_eq!(acknowledgement["version"], 1);
+        assert_eq!(acknowledgement["requestId"], envelope["requestId"]);
+        assert_eq!(acknowledgement["connectionId"], envelope["connectionId"]);
+        let capabilities = relay_capabilities(envelope["connectionId"].as_str().unwrap());
+        assert_eq!(capabilities["deliveryAck"], true);
     }
 }
