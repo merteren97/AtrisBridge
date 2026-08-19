@@ -910,12 +910,10 @@ mod tests {
             )
             .expect("permission");
 
-        assert!(grant_persistently_allowed_capability(
-            &connection,
-            &session,
-            "command.execute"
-        )
-        .expect("refresh"));
+        assert!(
+            grant_persistently_allowed_capability(&connection, &session, "command.execute")
+                .expect("refresh")
+        );
         assert!(load_session_capabilities(&connection, &session.id)
             .expect("capabilities")
             .iter()
@@ -927,12 +925,10 @@ mod tests {
         let connection = test_database();
         let session = insert_active_session(&connection, "session-ask");
 
-        assert!(!grant_persistently_allowed_capability(
-            &connection,
-            &session,
-            "command.execute"
-        )
-        .expect("refresh"));
+        assert!(
+            !grant_persistently_allowed_capability(&connection, &session, "command.execute")
+                .expect("refresh")
+        );
         assert!(!load_session_capabilities(&connection, &session.id)
             .expect("capabilities")
             .iter()
