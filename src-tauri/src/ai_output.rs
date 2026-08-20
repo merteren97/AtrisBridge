@@ -47,8 +47,11 @@ impl TailPreservingBuffer {
         }
         if remaining.len() >= self.tail_capacity {
             self.tail.clear();
-            self.tail
-                .extend(remaining[remaining.len() - self.tail_capacity..].iter().copied());
+            self.tail.extend(
+                remaining[remaining.len() - self.tail_capacity..]
+                    .iter()
+                    .copied(),
+            );
             return;
         }
 
