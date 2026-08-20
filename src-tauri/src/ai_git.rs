@@ -1743,7 +1743,14 @@ fn truncate_error_detail(value: &str, max_chars: usize) -> String {
         return value.to_string();
     }
     if max_chars <= 2 {
-        return value.chars().rev().take(max_chars).collect::<Vec<_>>().into_iter().rev().collect();
+        return value
+            .chars()
+            .rev()
+            .take(max_chars)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
     }
     let tail = value
         .chars()
