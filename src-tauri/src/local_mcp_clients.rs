@@ -107,10 +107,14 @@ enum RegistrationProbe {
 
 pub fn list_local_mcp_clients(app: AppHandle) -> Result<Vec<LocalMcpClientStatus>, String> {
     let managed = ensure_managed_companion(&app);
-    Ok([LocalMcpClientKind::Codex, LocalMcpClientKind::Claude, LocalMcpClientKind::Gemini]
-        .into_iter()
-        .map(|kind| client_status(&app, kind, managed.as_ref()))
-        .collect())
+    Ok([
+        LocalMcpClientKind::Codex,
+        LocalMcpClientKind::Claude,
+        LocalMcpClientKind::Gemini,
+    ]
+    .into_iter()
+    .map(|kind| client_status(&app, kind, managed.as_ref()))
+    .collect())
 }
 
 pub fn register_local_mcp_client(
@@ -545,29 +549,49 @@ fn probe_claude(
 fn probe_gemini(managed: &ManagedCompanion) -> RegistrationProbe {
     let home = env::var_os("USERPROFILE").or_else(|| env::var_os("HOME"));
     let Some(home) = home else {
-        return RegistrationProbe::Error("Could not resolve Gemini CLI user settings directory.".into());
+        return RegistrationProbe::Error(
+            "Could not resolve Gemini CLI user settings directory.".into(),
+        );
     };
     let home = PathBuf::from(home);
     if !home.is_absolute() {
-        return RegistrationProbe::Error("Gemini CLI user settings directory is not absolute.".into());
+        return RegistrationProbe::Error(
+            "Gemini CLI user settings directory is not absolute.".into(),
+        );
     }
     let settings = home.join(".gemini").join("settings.json");
     let metadata = match fs::symlink_metadata(&settings) {
         Ok(value) => value,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return RegistrationProbe::Absent,
-        Err(error) => return RegistrationProbe::Error(format!("Could not inspect Gemini CLI user settings: {error}")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return RegistrationProbe::Absent
+        }
+        Err(error) => {
+            return RegistrationProbe::Error(format!(
+                "Could not inspect Gemini CLI user settings: {error}"
+            ))
+        }
     };
     if !metadata.is_file() || metadata.file_type().is_symlink() {
         return RegistrationProbe::Error("Gemini CLI settings is not a regular file.".into());
     }
     const MAX_GEMINI_SETTINGS_BYTES: u64 = 1024 * 1024;
     if metadata.len() > MAX_GEMINI_SETTINGS_BYTES {
-        return RegistrationProbe::Error("Gemini CLI user settings exceeded the safety bound.".into());
+        return RegistrationProbe::Error(
+            "Gemini CLI user settings exceeded the safety bound.".into(),
+        );
     }
     let contents = match fs::read(&settings) {
         Ok(value) if (value.len() as u64) <= MAX_GEMINI_SETTINGS_BYTES => value,
-        Ok(_) => return RegistrationProbe::Error("Gemini CLI user settings exceeded the safety bound.".into()),
-        Err(error) => return RegistrationProbe::Error(format!("Could not read Gemini CLI user settings: {error}")),
+        Ok(_) => {
+            return RegistrationProbe::Error(
+                "Gemini CLI user settings exceeded the safety bound.".into(),
+            )
+        }
+        Err(error) => {
+            return RegistrationProbe::Error(format!(
+                "Could not read Gemini CLI user settings: {error}"
+            ))
+        }
     };
     classify_gemini_settings(&contents, managed)
 }
@@ -575,7 +599,11 @@ fn probe_gemini(managed: &ManagedCompanion) -> RegistrationProbe {
 fn classify_gemini_settings(contents: &[u8], managed: &ManagedCompanion) -> RegistrationProbe {
     let root: Value = match serde_json::from_slice(contents) {
         Ok(value) => value,
-        Err(_) => return RegistrationProbe::Error("Gemini CLI user settings contains invalid JSON.".into()),
+        Err(_) => {
+            return RegistrationProbe::Error(
+                "Gemini CLI user settings contains invalid JSON.".into(),
+            )
+        }
     };
     let Some(servers) = root.get("mcpServers") else {
         return RegistrationProbe::Absent;
@@ -587,21 +615,33 @@ fn classify_gemini_settings(contents: &[u8], managed: &ManagedCompanion) -> Regi
         return RegistrationProbe::Absent;
     };
     let Some(entry) = entry.as_object() else {
-        return RegistrationProbe::Conflict("The existing Gemini MCP registration is not a server object.".into());
+        return RegistrationProbe::Conflict(
+            "The existing Gemini MCP registration is not a server object.".into(),
+        );
     };
     if entry.contains_key("url") || entry.contains_key("httpUrl") {
-        return RegistrationProbe::Conflict("The existing Gemini entry is a remote MCP server, not the managed local companion.".into());
+        return RegistrationProbe::Conflict(
+            "The existing Gemini entry is a remote MCP server, not the managed local companion."
+                .into(),
+        );
     }
     let command = entry.get("command").and_then(Value::as_str).unwrap_or("");
     let args = match entry.get("args") {
         None => Vec::new(),
         Some(Value::Array(values)) => {
             let Some(items) = values.iter().map(Value::as_str).collect::<Option<Vec<_>>>() else {
-                return RegistrationProbe::Conflict("Gemini MCP server arguments must be strings.".into());
+                return RegistrationProbe::Conflict(
+                    "Gemini MCP server arguments must be strings.".into(),
+                );
             };
-            items.into_iter().map(ToOwned::to_owned).collect::<Vec<String>>()
+            items
+                .into_iter()
+                .map(ToOwned::to_owned)
+                .collect::<Vec<String>>()
         }
-        Some(_) => return RegistrationProbe::Conflict("Gemini MCP server arguments are invalid.".into()),
+        Some(_) => {
+            return RegistrationProbe::Conflict("Gemini MCP server arguments are invalid.".into())
+        }
     };
     classify_registration(command, &args, LocalMcpClientKind::Gemini, managed)
 }
@@ -1096,16 +1136,34 @@ mod tests {
         let managed = managed("/safe/mcp/0.2/atrisbridge-mcp", "/safe/mcp");
         assert_eq!(LocalMcpClientKind::Gemini.principal(), "mcp.gemini");
         let exact = br#"{"mcpServers":{"atrisbridge":{"command":"/safe/mcp/0.2/atrisbridge-mcp","args":["--client","gemini"]}}}"#;
-        assert!(matches!(classify_gemini_settings(exact, &managed), RegistrationProbe::Exact));
+        assert!(matches!(
+            classify_gemini_settings(exact, &managed),
+            RegistrationProbe::Exact
+        ));
         let stale = br#"{"mcpServers":{"atrisbridge":{"command":"/safe/mcp/0.1/atrisbridge-mcp","args":["--client","gemini"]}}}"#;
-        assert!(matches!(classify_gemini_settings(stale, &managed), RegistrationProbe::OwnedStale));
+        assert!(matches!(
+            classify_gemini_settings(stale, &managed),
+            RegistrationProbe::OwnedStale
+        ));
         let foreign = br#"{"mcpServers":{"atrisbridge":{"command":"/tmp/other","args":["--client","gemini"]}}}"#;
-        assert!(matches!(classify_gemini_settings(foreign, &managed), RegistrationProbe::Conflict(_)));
+        assert!(matches!(
+            classify_gemini_settings(foreign, &managed),
+            RegistrationProbe::Conflict(_)
+        ));
         let wrong_principal = br#"{"mcpServers":{"atrisbridge":{"command":"/safe/mcp/0.2/atrisbridge-mcp","args":["--client","generic"]}}}"#;
-        assert!(matches!(classify_gemini_settings(wrong_principal, &managed), RegistrationProbe::Conflict(_)));
+        assert!(matches!(
+            classify_gemini_settings(wrong_principal, &managed),
+            RegistrationProbe::Conflict(_)
+        ));
         let absent = br#"{"mcpServers":{}}"#;
-        assert!(matches!(classify_gemini_settings(absent, &managed), RegistrationProbe::Absent));
-        assert!(matches!(classify_gemini_settings(b"{not-json", &managed), RegistrationProbe::Error(_)));
+        assert!(matches!(
+            classify_gemini_settings(absent, &managed),
+            RegistrationProbe::Absent
+        ));
+        assert!(matches!(
+            classify_gemini_settings(b"{not-json", &managed),
+            RegistrationProbe::Error(_)
+        ));
     }
 
     #[test]
