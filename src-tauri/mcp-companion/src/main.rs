@@ -415,7 +415,7 @@ fn parse_args() -> Result<ParsedArgs, String> {
             "--client" => {
                 client_kind = args
                     .next()
-                    .ok_or_else(|| "--client requires codex, claude, or generic.".to_string())?;
+                    .ok_or_else(|| "--client requires codex, claude, gemini, or generic.".to_string())?;
             }
             "--version" | "-V" => {
                 println!("atrisbridge-mcp {}", env!("CARGO_PKG_VERSION"));
@@ -426,7 +426,7 @@ fn parse_args() -> Result<ParsedArgs, String> {
             }
             "--help" | "-h" => {
                 println!(
-                    "AtrisBridge MCP companion\n\nUsage: atrisbridge-mcp [--client codex|claude|generic]\n"
+                    "AtrisBridge MCP companion\n\nUsage: atrisbridge-mcp [--client codex|claude|gemini|generic]\n"
                 );
                 return Ok(ParsedArgs {
                     client_kind,
@@ -436,8 +436,8 @@ fn parse_args() -> Result<ParsedArgs, String> {
             _ => return Err(format!("Unknown AtrisBridge MCP argument '{argument}'.")),
         }
     }
-    if !matches!(client_kind.as_str(), "codex" | "claude" | "generic") {
-        return Err("--client must be codex, claude, or generic.".into());
+    if !matches!(client_kind.as_str(), "codex" | "claude" | "gemini" | "generic") {
+        return Err("--client must be codex, claude, gemini, or generic.".into());
     }
     Ok(ParsedArgs {
         client_kind,
@@ -714,8 +714,8 @@ mod tests {
             "codex".to_string(),
         ];
         assert_eq!(original[2], "codex");
-        assert!(matches!("codex", "codex" | "claude" | "generic"));
-        assert!(!matches!("mcp.codex", "codex" | "claude" | "generic"));
+        assert!(matches!("codex", "codex" | "claude" | "gemini" | "generic"));
+        assert!(!matches!("mcp.codex", "codex" | "claude" | "gemini" | "generic"));
     }
 
     #[test]
