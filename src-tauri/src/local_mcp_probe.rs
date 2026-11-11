@@ -165,6 +165,7 @@ fn client_arg(kind: LocalMcpClientKind) -> &'static str {
     match kind {
         LocalMcpClientKind::Codex => "codex",
         LocalMcpClientKind::Claude => "claude",
+        LocalMcpClientKind::Gemini => "gemini",
     }
 }
 
@@ -172,6 +173,7 @@ fn principal(kind: LocalMcpClientKind) -> &'static str {
     match kind {
         LocalMcpClientKind::Codex => "mcp.codex",
         LocalMcpClientKind::Claude => "mcp.claude",
+        LocalMcpClientKind::Gemini => "mcp.gemini",
     }
 }
 
@@ -219,5 +221,7 @@ mod tests {
         assert_eq!(principal(LocalMcpClientKind::Codex), "mcp.codex");
         assert_eq!(client_arg(LocalMcpClientKind::Claude), "claude");
         assert_eq!(principal(LocalMcpClientKind::Claude), "mcp.claude");
+        assert_eq!(client_arg(LocalMcpClientKind::Gemini), "gemini");
+        assert_eq!(principal(LocalMcpClientKind::Gemini), "mcp.gemini");
     }
 }
