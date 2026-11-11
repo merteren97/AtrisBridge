@@ -226,6 +226,7 @@ AtrisBridge remains alpha software. Compatibility, migration behavior, provider 
 - [Desktop runtime](docs/desktop-runtime.md)
 - [Security model](docs/security.md)
 - [AtrisHub account integration](docs/atrishub-account.md)
+- [Gemini MCP integration and rollout plan](docs/gemini-mcp-integration.md)
 - [Release and updater](docs/release-updater.md)
 
 ## Security and responsible use
