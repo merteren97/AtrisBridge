@@ -1,4 +1,4 @@
-export type LocalMcpClientKind = "codex" | "claude";
+export type LocalMcpClientKind = "codex" | "claude" | "gemini";
 export type LocalMcpRegistrationState =
   | "companion_unavailable"
   | "not_installed"
