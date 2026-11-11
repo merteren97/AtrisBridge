@@ -416,7 +416,7 @@ export default function AiPolicyPresetPanel({ workspaces, onError }: AiPolicyPre
               {clients.length === 0 && <option value="">No authenticated client yet</option>}
               <optgroup label="Remote">
                 {remoteClients.length === 0
-                  ? <option value="" disabled>ChatGPT — connect with OAuth to configure</option>
+                  ? <option value="" disabled>Remote MCP — connect with OAuth to configure</option>
                   : remoteClients.map((client) => <option key={client.principal} value={client.principal}>{client.displayName}</option>)}
               </optgroup>
               {localClients.length > 0 && (
@@ -432,7 +432,7 @@ export default function AiPolicyPresetPanel({ workspaces, onError }: AiPolicyPre
               ? "Loading saved workspace permissions..."
               : remoteClients.length > 0
                 ? "Remote OAuth identity discovered from AtrisHub; saved AtrisBridge workspace rules are loaded locally."
-                : "ChatGPT is supported now, but a secure remote principal is created only after OAuth authorization."}
+                : "A secure remote client principal is created only after OAuth authorization."}
           </small>
         </label>
 

@@ -36,7 +36,7 @@ interface AiClientConnectionsPanelProps {
 }
 
 const CONNECTOR_URL_FALLBACK = "https://atrishub.com/api/mcp/v1/mcp";
-const CLIENT_ORDER: LocalMcpClientKind[] = ["codex", "claude"];
+const CLIENT_ORDER: LocalMcpClientKind[] = ["codex", "claude", "gemini"];
 const RELAY_AUTO_RECOVERY_COOLDOWN_MS = 30_000;
 const RELAY_AUTO_RECOVERY_REFRESH_MS = 1_200;
 
@@ -254,7 +254,7 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
       <div className="settings-heading ai-gateway-heading">
         <div>
           <span className="section-kicker">AI workspace gateway</span>
-          <h2>ChatGPT and local AI clients</h2>
+          <h2>AI client connections</h2>
           <p>Connections establish identity and transport only. Workspace permissions are configured once in the unified policy section below.</p>
         </div>
         <button className="button secondary" type="button" onClick={() => void refreshClients()} disabled={busy !== null || remoteBusy !== null}>
@@ -265,9 +265,9 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
       <div className="ai-remote-section">
         <div className="ai-remote-heading">
           <div>
-            <span className="section-kicker">ChatGPT / remote MCP</span>
-            <h3>ChatGPT through AtrisHub</h3>
-            <p>Each row is an OAuth authorization, not an open ChatGPT conversation. AtrisBridge keeps separate principals so permissions never bleed between independently registered clients.</p>
+            <span className="section-kicker">ChatGPT / Gemini Web / remote MCP</span>
+            <h3>Remote MCP through AtrisHub</h3>
+            <p>Each row is an OAuth authorization, not an open AI conversation. AtrisBridge keeps separate principals so permissions never bleed between independently registered clients.</p>
           </div>
           <div>
             <span className={`ai-status-pill ${relayTone(relayStatus)}`}>
@@ -285,6 +285,14 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
           <div>
             <span className="ai-status-pill success"><ShieldCheck size={11} /> Principal-scoped policy</span>
             <button className="button secondary" type="button" onClick={() => void handleCopyEndpoint()}>Copy endpoint</button>
+          </div>
+        </div>
+
+        <div className="ai-policy-boundary">
+          <Link2 size={16} />
+          <div>
+            <strong>Gemini Web — eligible Google accounts</strong>
+            <p>In Gemini, open Settings → Connected Apps → Custom apps, add this HTTPS MCP endpoint, authorize AtrisHub, then set the new remote client&apos;s workspace permissions below. Google controls country/account availability; a configured URL alone does not mean a live connection.</p>
           </div>
         </div>
 
@@ -316,9 +324,9 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
             <div className="ai-remote-row">
               <span className="ai-remote-icon"><Cloud size={16} /></span>
               <div className="ai-remote-identity">
-                <div><strong>ChatGPT</strong><span>Remote</span></div>
+                <div><strong>Remote MCP clients</strong><span>ChatGPT / Gemini</span></div>
                 <code>Secure principal created after OAuth</code>
-                <small>Not authorized yet. The client stays visible, but permissions are not attached to a fake identity.</small>
+                <small>No remote OAuth client has authorized AtrisBridge yet; each authorization appears here with its own principal.</small>
               </div>
               <span className="ai-status-pill neutral">Not authorized</span>
             </div>
@@ -341,7 +349,7 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
                     <button
                       className="button secondary"
                       type="button"
-                      title="Route new ChatGPT sessions to this computer"
+                      title="Route new remote MCP sessions to this computer"
                       onClick={() => void handleRemoteRouteHere(client)}
                       disabled={remoteBusy !== null || busy !== null || relayStatus?.state !== "online"}
                     >
@@ -370,7 +378,7 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
             <ShieldCheck size={14} />
             <div>
               <strong>Routing changes only new sessions.</strong>
-              <p>Existing workspace sessions and command tasks remain pinned to the Desktop where they were created. Start a new ChatGPT workspace session after routing this authorization here.</p>
+              <p>Existing workspace sessions and command tasks remain pinned to the Desktop where they were created. Start a new remote MCP workspace session after routing this authorization here.</p>
             </div>
           </div>
         )}
@@ -379,8 +387,8 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
       <div className="ai-permission-header">
         <div>
           <span className="section-kicker">Local developer clients</span>
-          <h3>Codex and Claude Code</h3>
-          <p>Local registrations use the packaged MCP companion. Their workspace permissions are managed by the same unified policy surface as ChatGPT.</p>
+          <h3>Codex, Claude Code and Gemini CLI</h3>
+          <p>Local registrations use the packaged MCP companion. Their workspace permissions are managed by the same unified policy surface as remote MCP clients.</p>
         </div>
       </div>
 
@@ -394,7 +402,7 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
                 <span className="ai-client-icon">{kind === "codex" ? <Code2 size={19} /> : <Bot size={19} />}</span>
                 <span className="ai-client-copy">
                   <span className="ai-client-title-line">
-                    <strong>{status?.label ?? (kind === "codex" ? "Codex" : "Claude Code")}</strong>
+                    <strong>{status?.label ?? (kind === "codex" ? "Codex" : kind === "claude" ? "Claude Code" : "Gemini CLI")}</strong>
                     {status && <span className={`ai-status-pill ${statusTone(status)}`}>{status.registrationHealthy ? <CheckCircle2 size={11} /> : status.registrationState === "conflict" ? <CircleOff size={11} /> : <TriangleAlert size={11} />}{statusLabel(status)}</span>}
                   </span>
                   <small>{status?.version ?? (status?.executableDetected ? "Version unavailable" : "Client detection pending")}</small>

@@ -313,6 +313,7 @@ fn principal_for_client_kind(client_kind: &str) -> Option<&'static str> {
     match client_kind {
         "codex" => Some("mcp.codex"),
         "claude" => Some("mcp.claude"),
+        "gemini" => Some("mcp.gemini"),
         "generic" => Some("mcp.generic"),
         _ => None,
     }
@@ -410,6 +411,7 @@ mod tests {
     fn local_client_kinds_map_to_fixed_principals() {
         assert_eq!(principal_for_client_kind("codex"), Some("mcp.codex"));
         assert_eq!(principal_for_client_kind("claude"), Some("mcp.claude"));
+        assert_eq!(principal_for_client_kind("gemini"), Some("mcp.gemini"));
         assert_eq!(principal_for_client_kind("generic"), Some("mcp.generic"));
         assert_eq!(principal_for_client_kind("mcp.codex"), None);
         assert_eq!(principal_for_client_kind("unknown"), None);
