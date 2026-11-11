@@ -288,6 +288,14 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
           </div>
         </div>
 
+        <div className="ai-policy-boundary">
+          <Link2 size={16} />
+          <div>
+            <strong>Gemini Web — eligible Google accounts</strong>
+            <p>In Gemini, open Settings → Connected Apps → Custom apps, add this HTTPS MCP endpoint, authorize AtrisHub, then set the new remote client&apos;s workspace permissions below. Google controls country/account availability; a configured URL alone does not mean a live connection.</p>
+          </div>
+        </div>
+
         <div className="ai-policy-summary">
           <div><small>Last connection attempt</small><strong>{formatDate(relayStatus?.lastAttemptAt)}</strong></div>
           <div><small>Last ready</small><strong>{formatDate(relayStatus?.lastConnectedAt)}</strong></div>
@@ -318,7 +326,7 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
               <div className="ai-remote-identity">
                 <div><strong>Remote MCP clients</strong><span>ChatGPT / Gemini</span></div>
                 <code>Secure principal created after OAuth</code>
-                <small>Not authorized yet. The client stays visible, but permissions are not attached to a fake identity.</small>
+                <small>No remote OAuth client has authorized AtrisBridge yet; each authorization appears here with its own principal.</small>
               </div>
               <span className="ai-status-pill neutral">Not authorized</span>
             </div>
