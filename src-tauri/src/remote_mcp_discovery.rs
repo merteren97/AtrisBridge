@@ -195,6 +195,7 @@ pub async fn revoke_remote_mcp_grant_client(
             .send()
             .map_err(|error| format!("Could not revoke AtrisHub remote MCP client: {error}"))?;
         if response.status() == StatusCode::NOT_FOUND {
+            crate::remote_mcp_relay::forget_remote_client(&app, &principal);
             return Ok(false);
         }
         if matches!(response.status(), StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
@@ -206,6 +207,7 @@ pub async fn revoke_remote_mcp_grant_client(
                 response.status()
             ));
         }
+        crate::remote_mcp_relay::forget_remote_client(&app, &principal);
         Ok(true)
     })
     .await
