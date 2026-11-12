@@ -453,7 +453,10 @@ mod tests {
             .as_str()
             .expect("text")
             .contains("workspace.read"));
-        assert_eq!(result["structuredContent"]["error"]["code"], "authority_error");
+        assert_eq!(
+            result["structuredContent"]["error"]["code"],
+            "authority_error"
+        );
     }
 
     #[test]
