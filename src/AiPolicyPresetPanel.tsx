@@ -294,6 +294,9 @@ export default function AiPolicyPresetPanel({ workspaces, onError }: AiPolicyPre
         setPermissionSnapshots(snapshots);
       }
     } catch (error) {
+      // A failed grant refresh is not proof that previous OAuth clients remain
+      // authorized. Hide stale remote principals from the policy selector.
+      setRemoteClients([]);
       onError(String(error));
     } finally {
       setBusy(null);
