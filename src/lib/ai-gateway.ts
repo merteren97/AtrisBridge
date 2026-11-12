@@ -25,43 +25,29 @@ export async function unregisterLocalMcpClient(
   return invoke<LocalMcpClientStatus>("unregister_local_mcp_client", { kind });
 }
 
+// AtrisHub is the authority for live OAuth grants. The Desktop's observed
+// client cache is telemetry only: it must never resurrect a revoked grant.
 export async function listRemoteMcpClients(): Promise<RemoteMcpClientRecord[]> {
-  const observed = await invoke<RemoteMcpClientRecord[]>("list_remote_mcp_clients");
-  let grants: RemoteMcpGrantClient[] = [];
-  try {
-    grants = await invoke<RemoteMcpGrantClient[]>("list_remote_mcp_grant_clients");
-  } catch {
-    grants = [];
-  }
+  const [grants, observed] = await Promise.all([
+    invoke<RemoteMcpGrantClient[]>("list_remote_mcp_grant_clients"),
+    invoke<RemoteMcpClientRecord[]>("list_remote_mcp_clients").catch(() => []),
+  ]);
+  const observations = new Map(observed.map((client) => [client.principal, client]));
 
-  const clients = new Map<string, RemoteMcpClientRecord>();
-  for (const grant of grants) {
-    clients.set(grant.principal, {
+  return grants.map((grant): RemoteMcpClientRecord => {
+    const seen = observations.get(grant.principal);
+    return {
       principal: grant.principal,
       displayName: grant.displayName,
-      firstSeenAt: "",
-      lastSeenAt: "",
-      observed: false,
+      firstSeenAt: seen?.firstSeenAt ?? "",
+      lastSeenAt: seen?.lastSeenAt ?? "",
+      observed: Boolean(seen),
       activeOnThisDevice: grant.activeOnThisDevice,
       relayReadyOnThisDevice: grant.relayReadyOnThisDevice,
       authorizedAt: grant.authorizedAt,
       authorizationUpdatedAt: grant.updatedAt,
-    });
-  }
-  for (const client of observed) {
-    const discovered = clients.get(client.principal);
-    clients.set(client.principal, {
-      ...client,
-      displayName: discovered?.displayName ?? client.displayName,
-      activeOnThisDevice: discovered?.activeOnThisDevice,
-      relayReadyOnThisDevice: discovered?.relayReadyOnThisDevice,
-      authorizedAt: discovered?.authorizedAt,
-      authorizationUpdatedAt: discovered?.authorizationUpdatedAt,
-      observed: true,
-    });
-  }
-
-  return [...clients.values()].sort((left, right) => {
+    };
+  }).sort((left, right) => {
     if (left.relayReadyOnThisDevice !== right.relayReadyOnThisDevice) {
       return left.relayReadyOnThisDevice === true
         ? -1
