@@ -82,7 +82,7 @@ function formatDate(value: string | null | undefined): string {
 function remoteClientDetail(client: RemoteMcpClientRecord): string {
   const authorized = client.authorizedAt ? `Authorized ${formatDate(client.authorizedAt)}` : "Authorized in AtrisHub";
   if (client.observed && client.lastSeenAt) return `${authorized} · last tool request ${formatDate(client.lastSeenAt)}`;
-  return `${authorized} · no tool request observed in this Desktop process`;
+  return `${authorized} · no tool request seen since this Desktop process started (not a failed authorization)`;
 }
 
 function remoteRoutingLabel(client: RemoteMcpClientRecord): string {
@@ -267,7 +267,7 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
           <div>
             <span className="section-kicker">ChatGPT / Gemini Web / remote MCP</span>
             <h3>Remote MCP through AtrisHub</h3>
-            <p>Each row is an OAuth authorization, not an open AI conversation. AtrisBridge keeps separate principals so permissions never bleed between independently registered clients.</p>
+            <p>Each Google row represents a separate OAuth authorization, not a failed attempt. Ready confirms relay routing only; it does not confirm a successful tool call or workspace permission. Keep the grant with recent tool activity and revoke unused ones only when you are certain they are not needed.</p>
           </div>
           <div>
             <span className={`ai-status-pill ${relayTone(relayStatus)}`}>
@@ -300,6 +300,7 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
           <div><small>Last connection attempt</small><strong>{formatDate(relayStatus?.lastAttemptAt)}</strong></div>
           <div><small>Last ready</small><strong>{formatDate(relayStatus?.lastConnectedAt)}</strong></div>
           <div><small>Authorized remote clients</small><strong>{remoteClients.length}</strong></div>
+          <div><small>Tool traffic observed in this process</small><strong>{remoteClients.filter((client) => client.observed).length}</strong></div>
         </div>
 
         {relayStatus?.lastError && (
@@ -337,7 +338,7 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
               <div className="ai-remote-row selected" key={client.principal}>
                 <span className="ai-remote-icon"><Cloud size={16} /></span>
                 <div className="ai-remote-identity">
-                  <div><strong>{client.displayName}</strong><span>Remote</span></div>
+                  <div><strong>{client.displayName}</strong><span>Remote</span>{client.observed && <span>Tool traffic seen</span>}</div>
                   <code>{client.principal}</code>
                   <small>{remoteClientDetail(client)}</small>
                 </div>

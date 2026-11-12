@@ -1,4 +1,6 @@
-use rusqlite::{params, OptionalExtension};
+use std::collections::HashSet;
+
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
@@ -171,8 +173,14 @@ pub fn dispatch_tool(
     match tool_name {
         "workspace_list" => {
             require_empty_object(arguments)?;
+            // A valid OAuth/IPC principal alone must not reveal local workspace names.
+            // Only workspaces with at least one explicitly Allowed capability for
+            // this exact principal are visible to this MCP transport.
+            let connection = open_database(app)?;
+            let visible = allowed_workspace_ids(&connection, principal)?;
             let workspaces = services::workspace::list(app)?
                 .into_iter()
+                .filter(|workspace| visible.contains(&workspace.id))
                 .map(|workspace| McpWorkspace {
                     id: workspace.id,
                     name: workspace.name,
@@ -486,6 +494,24 @@ pub fn cancel_task(
     )
 }
 
+fn allowed_workspace_ids(
+    connection: &Connection,
+    principal: &str,
+) -> Result<HashSet<String>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT DISTINCT workspace_id FROM ai_permission_rules
+             WHERE client_id = ?1 AND rule = 'allow'",
+        )
+        .map_err(|error| format!("Could not prepare MCP workspace visibility query: {error}"))?;
+    let ids = statement
+        .query_map(params![principal], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("Could not query MCP workspace visibility: {error}"))?
+        .collect::<rusqlite::Result<HashSet<_>>>()
+        .map_err(|error| format!("Could not load MCP workspace visibility: {error}"))?;
+    Ok(ids)
+}
+
 fn owned_session(app: &AppHandle, principal: &str, session_id: &str) -> Result<AiSession, String> {
     let connection = open_database(app)?;
     let owner = connection
@@ -601,6 +627,41 @@ mod tests {
         for status in ["queued", "running"] {
             assert!(!is_terminal_task_status(status));
         }
+    }
+
+    #[test]
+    fn workspace_list_is_principal_scoped_and_default_deny() {
+        let connection = Connection::open_in_memory().expect("sqlite");
+        connection
+            .execute_batch(
+                "CREATE TABLE ai_permission_rules (
+                    workspace_id TEXT NOT NULL,
+                    client_id TEXT NOT NULL,
+                    capability TEXT NOT NULL,
+                    rule TEXT NOT NULL
+                );
+                INSERT INTO ai_permission_rules VALUES
+                    ('ws-1', 'mcp.remote.google-one', 'workspace.read', 'allow'),
+                    ('ws-1', 'mcp.remote.google-one', 'sync.read', 'allow'),
+                    ('ws-2', 'mcp.remote.google-one', 'workspace.read', 'ask'),
+                    ('ws-3', 'mcp.remote.google-one', 'workspace.read', 'deny'),
+                    ('ws-4', 'mcp.remote.google-two', 'workspace.read', 'allow'),
+                    ('ws-5', 'mcp.codex', 'workspace.read', 'allow');",
+            )
+            .expect("seed");
+        let google_one =
+            allowed_workspace_ids(&connection, "mcp.remote.google-one").expect("google one");
+        assert_eq!(google_one.len(), 1);
+        assert!(google_one.contains("ws-1"));
+        let google_two =
+            allowed_workspace_ids(&connection, "mcp.remote.google-two").expect("google two");
+        assert_eq!(google_two.len(), 1);
+        assert!(google_two.contains("ws-4"));
+        assert!(
+            allowed_workspace_ids(&connection, "mcp.remote.not-authorized")
+                .expect("unknown")
+                .is_empty()
+        );
     }
 
     #[test]

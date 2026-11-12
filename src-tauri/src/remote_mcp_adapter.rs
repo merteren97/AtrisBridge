@@ -148,7 +148,7 @@ fn dispatch_tool_call(
             Ok(call_tool_result(
                 json!({"error": {"code": "authority_error", "message": safe}}),
                 true,
-                Some("AtrisBridge Desktop rejected the tool request."),
+                Some(&safe),
             ))
         }
     }
@@ -439,6 +439,25 @@ fn bounded_error(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_errors_expose_bounded_safe_details_to_legacy_models() {
+        let result = call_tool_result(
+            json!({"error": {"code": "authority_error", "message": "AI capability 'workspace.read' requires explicit session approval."}}),
+            true,
+            Some("AI capability 'workspace.read' requires explicit session approval."),
+        );
+        assert_eq!(result["isError"], true);
+        assert_eq!(result["content"][0]["type"], "text");
+        assert!(result["content"][0]["text"]
+            .as_str()
+            .expect("text")
+            .contains("workspace.read"));
+        assert_eq!(
+            result["structuredContent"]["error"]["code"],
+            "authority_error"
+        );
+    }
 
     #[test]
     fn discovery_is_stateless_and_task_extension_aware() {
