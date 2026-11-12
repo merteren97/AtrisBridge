@@ -494,7 +494,10 @@ pub fn cancel_task(
     )
 }
 
-fn allowed_workspace_ids(connection: &Connection, principal: &str) -> Result<HashSet<String>, String> {
+fn allowed_workspace_ids(
+    connection: &Connection,
+    principal: &str,
+) -> Result<HashSet<String>, String> {
     let mut statement = connection
         .prepare(
             "SELECT DISTINCT workspace_id FROM ai_permission_rules
@@ -646,17 +649,19 @@ mod tests {
                     ('ws-5', 'mcp.codex', 'workspace.read', 'allow');",
             )
             .expect("seed");
-        let google_one = allowed_workspace_ids(&connection, "mcp.remote.google-one")
-            .expect("google one");
+        let google_one =
+            allowed_workspace_ids(&connection, "mcp.remote.google-one").expect("google one");
         assert_eq!(google_one.len(), 1);
         assert!(google_one.contains("ws-1"));
-        let google_two = allowed_workspace_ids(&connection, "mcp.remote.google-two")
-            .expect("google two");
+        let google_two =
+            allowed_workspace_ids(&connection, "mcp.remote.google-two").expect("google two");
         assert_eq!(google_two.len(), 1);
         assert!(google_two.contains("ws-4"));
-        assert!(allowed_workspace_ids(&connection, "mcp.remote.not-authorized")
-            .expect("unknown")
-            .is_empty());
+        assert!(
+            allowed_workspace_ids(&connection, "mcp.remote.not-authorized")
+                .expect("unknown")
+                .is_empty()
+        );
     }
 
     #[test]
