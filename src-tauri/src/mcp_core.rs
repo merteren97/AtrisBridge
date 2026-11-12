@@ -71,7 +71,7 @@ pub fn tool_catalog() -> Vec<McpToolContract> {
         tool(
             "workspace_list",
             "List authorized workspaces",
-            "List only workspace identities visible to the authenticated transport principal. Local absolute paths are never exposed.",
+            "List workspaces explicitly permitted for this exact MCP client principal (at least one capability set to Allow in AtrisBridge AI client permissions). Returns only workspace identity metadata, never local absolute paths. If empty, grant this client a workspace policy in AtrisBridge Settings, then call again. Use each returned id exactly as workspaceId for session_open.",
             &[],
             false,
             schema(json!({}), &[]),
@@ -81,7 +81,7 @@ pub fn tool_catalog() -> Vec<McpToolContract> {
         tool(
             "session_open",
             "Open workspace session",
-            "Open an explicit AtrisBridge AI workspace session for the authenticated transport principal. Client identity is supplied by the transport and is never a model argument.",
+            "Open an explicit workspace session using the exact workspaceId from workspace_list (NOT a workspace name, remote backup folder, or local path). Request only capabilities already Allowed for this exact remote OAuth principal and workspace; Ask and Deny are not auto-approved over MCP. On success, save the returned id as sessionId for all subsequent tools. A rejected request creates no session. The transport supplies the client identity.",
             &[],
             false,
             schema(
@@ -105,7 +105,7 @@ pub fn tool_catalog() -> Vec<McpToolContract> {
         tool(
             "session_status",
             "Inspect workspace session",
-            "Inspect the current explicit AtrisBridge AI session and its granted capability set.",
+            "Inspect an existing AI session by its sessionId (the id returned by successful session_open), NOT by workspaceId, folder name or remote folder path.",
             &[],
             false,
             session_only_schema(),
