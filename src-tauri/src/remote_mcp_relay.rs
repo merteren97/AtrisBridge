@@ -259,6 +259,16 @@ pub(crate) fn remember_remote_client(app: &AppHandle, principal: &str, display_n
     }
 }
 
+// After the server confirms revocation (or that the grant is already absent),
+// discard process-local telemetry so a later authorization of the same client
+// cannot inherit its previous tool-activity indicator.
+pub(crate) fn forget_remote_client(app: &AppHandle, principal: &str) {
+    let manager = app.state::<RemoteMcpRelayManager>();
+    if let Ok(mut runtime) = manager.inner.lock() {
+        runtime.clients.remove(principal);
+    }
+}
+
 pub(crate) fn notify_auth_changed(app: &AppHandle) {
     let manager = app.state::<RemoteMcpRelayManager>();
     let sender = manager
