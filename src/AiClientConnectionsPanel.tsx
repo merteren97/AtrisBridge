@@ -107,6 +107,7 @@ function routedHereWithoutRelayPresence(clients: RemoteMcpClientRecord[]): boole
 export default function AiClientConnectionsPanel({ onError }: AiClientConnectionsPanelProps) {
   const [clients, setClients] = useState<LocalMcpClientStatus[]>([]);
   const [remoteClients, setRemoteClients] = useState<RemoteMcpClientRecord[]>([]);
+  const [remoteListError, setRemoteListError] = useState<string | null>(null);
   const [relayStatus, setRelayStatus] = useState<RemoteMcpRelayStatus | null>(null);
   const [busy, setBusy] = useState<LocalMcpClientKind | "refresh" | "relay" | null>(null);
   const [remoteBusy, setRemoteBusy] = useState<string | null>(null);
@@ -141,9 +142,13 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
         getRemoteMcpRelayStatus(),
       ]);
       setRemoteClients(nextRemoteClients);
+      setRemoteListError(null);
       setRelayStatus(nextRelayStatus);
       await recoverRelayPresenceIfNeeded(nextRemoteClients, nextRelayStatus);
     } catch (error) {
+      // Never present stale cached grants as authorized after a failed server lookup.
+      setRemoteClients([]);
+      setRemoteListError(String(error));
       if (reportErrors) onError(String(error));
     }
   }
@@ -158,9 +163,12 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
       ]);
       setClients(nextClients);
       setRemoteClients(nextRemoteClients);
+      setRemoteListError(null);
       setRelayStatus(nextRelayStatus);
       await recoverRelayPresenceIfNeeded(nextRemoteClients, nextRelayStatus);
     } catch (error) {
+      setRemoteClients([]);
+      setRemoteListError(String(error));
       onError(String(error));
     } finally {
       setBusy(null);
@@ -237,6 +245,8 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
     if (!confirmed) return;
     try {
       setRemoteBusy(`revoke:${client.principal}`);
+      // HTTP 404 is idempotent: the grant was already revoked on AtrisHub.
+      // Either outcome must refresh the authoritative server-owned list.
       await revokeRemoteMcpClient(client.principal);
       await refreshRemoteSurface(true);
     } catch (error) {
@@ -299,7 +309,7 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
         <div className="ai-policy-summary">
           <div><small>Last connection attempt</small><strong>{formatDate(relayStatus?.lastAttemptAt)}</strong></div>
           <div><small>Last ready</small><strong>{formatDate(relayStatus?.lastConnectedAt)}</strong></div>
-          <div><small>Authorized remote clients</small><strong>{remoteClients.length}</strong></div>
+          <div><small>Authorized remote clients</small><strong>{remoteListError ? "Unavailable" : remoteClients.length}</strong></div>
           <div><small>Tool traffic observed in this process</small><strong>{remoteClients.filter((client) => client.observed).length}</strong></div>
         </div>
 
@@ -307,6 +317,16 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
           <div className="ai-ask-note">
             <TriangleAlert size={14} />
             <div><strong>Last relay error</strong><p>{relayStatus.lastError}</p></div>
+          </div>
+        )}
+
+        {remoteListError && (
+          <div className="ai-ask-note">
+            <TriangleAlert size={14} />
+            <div>
+              <strong>Could not verify authorized remote MCP clients.</strong>
+              <p>{remoteListError} The old observed-client cache is intentionally hidden. Refresh when AtrisHub is reachable.</p>
+            </div>
           </div>
         )}
 
@@ -321,7 +341,16 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
         )}
 
         <div className="ai-remote-list">
-          {remoteClients.length === 0 ? (
+          {remoteListError ? (
+            <div className="ai-remote-row">
+              <span className="ai-remote-icon"><TriangleAlert size={16} /></span>
+              <div className="ai-remote-identity">
+                <div><strong>Authorization status unavailable</strong><span>Server verification required</span></div>
+                <small>No clients are displayed until AtrisHub confirms their active OAuth grants.</small>
+              </div>
+              <span className="ai-status-pill warning">Retry verification</span>
+            </div>
+          ) : remoteClients.length === 0 ? (
             <div className="ai-remote-row">
               <span className="ai-remote-icon"><Cloud size={16} /></span>
               <div className="ai-remote-identity">
@@ -372,6 +401,14 @@ export default function AiClientConnectionsPanel({ onError }: AiClientConnection
               </div>
             );
           })}
+        </div>
+
+        <div className="ai-policy-boundary">
+          <ShieldCheck size={16} />
+          <div>
+            <strong>Remove a connection in both places</strong>
+            <p>Revoke here to invalidate AtrisHub access for that exact OAuth client. Then remove the custom app in Gemini's Connected Apps settings. Google may still display its own saved app entry until you remove it there. Workspace files are untouched.</p>
+          </div>
         </div>
 
         {remoteClients.some((client) => client.activeOnThisDevice === false) && (

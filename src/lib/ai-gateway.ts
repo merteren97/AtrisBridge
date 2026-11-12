@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { combineAuthorizedRemoteMcpClients } from "./remote-mcp-grants";
 import type {
   AiPermissionRecord,
   AiPermissionRule,
@@ -25,59 +26,16 @@ export async function unregisterLocalMcpClient(
   return invoke<LocalMcpClientStatus>("unregister_local_mcp_client", { kind });
 }
 
+// AtrisHub is the authority for live OAuth grants. The Desktop's observed
+// client cache is telemetry only: it must never resurrect a revoked grant.
 export async function listRemoteMcpClients(): Promise<RemoteMcpClientRecord[]> {
-  const observed = await invoke<RemoteMcpClientRecord[]>("list_remote_mcp_clients");
-  let grants: RemoteMcpGrantClient[] = [];
-  try {
-    grants = await invoke<RemoteMcpGrantClient[]>("list_remote_mcp_grant_clients");
-  } catch {
-    grants = [];
-  }
-
-  const clients = new Map<string, RemoteMcpClientRecord>();
-  for (const grant of grants) {
-    clients.set(grant.principal, {
-      principal: grant.principal,
-      displayName: grant.displayName,
-      firstSeenAt: "",
-      lastSeenAt: "",
-      observed: false,
-      activeOnThisDevice: grant.activeOnThisDevice,
-      relayReadyOnThisDevice: grant.relayReadyOnThisDevice,
-      authorizedAt: grant.authorizedAt,
-      authorizationUpdatedAt: grant.updatedAt,
-    });
-  }
-  for (const client of observed) {
-    const discovered = clients.get(client.principal);
-    clients.set(client.principal, {
-      ...client,
-      displayName: discovered?.displayName ?? client.displayName,
-      activeOnThisDevice: discovered?.activeOnThisDevice,
-      relayReadyOnThisDevice: discovered?.relayReadyOnThisDevice,
-      authorizedAt: discovered?.authorizedAt,
-      authorizationUpdatedAt: discovered?.authorizationUpdatedAt,
-      observed: true,
-    });
-  }
-
-  return [...clients.values()].sort((left, right) => {
-    if (left.relayReadyOnThisDevice !== right.relayReadyOnThisDevice) {
-      return left.relayReadyOnThisDevice === true
-        ? -1
-        : right.relayReadyOnThisDevice === true
-          ? 1
-          : 0;
-    }
-    if (left.activeOnThisDevice !== right.activeOnThisDevice) {
-      return left.activeOnThisDevice === true ? -1 : right.activeOnThisDevice === true ? 1 : 0;
-    }
-    if (left.observed !== right.observed) return left.observed ? -1 : 1;
-    const leftUpdated = left.authorizationUpdatedAt ?? "";
-    const rightUpdated = right.authorizationUpdatedAt ?? "";
-    if (leftUpdated !== rightUpdated) return rightUpdated.localeCompare(leftUpdated);
-    return left.displayName.localeCompare(right.displayName);
-  });
+  // Grant discovery failure must propagate. Treating it as an empty successful
+  // lookup would falsely resurrect revoked process-local observed clients.
+  const [grants, observed] = await Promise.all([
+    invoke<RemoteMcpGrantClient[]>("list_remote_mcp_grant_clients"),
+    invoke<RemoteMcpClientRecord[]>("list_remote_mcp_clients").catch(() => []),
+  ]);
+  return combineAuthorizedRemoteMcpClients(grants, observed);
 }
 
 export async function routeRemoteMcpClientHere(principal: string): Promise<boolean> {

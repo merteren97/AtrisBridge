@@ -36,6 +36,8 @@ jobs:
         run: npm run build
       - name: Validate release contracts
         run: npm run test:release-contract
+      - name: Verify authoritative remote MCP grant state
+        run: npm run test:remote-mcp-grants
 
   rust:
     name: Rust check
