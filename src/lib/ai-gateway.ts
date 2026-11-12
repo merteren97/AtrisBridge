@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { combineAuthorizedRemoteMcpClients } from "./remote-mcp-grants";
 import type {
   AiPermissionRecord,
   AiPermissionRule,
@@ -28,42 +29,13 @@ export async function unregisterLocalMcpClient(
 // AtrisHub is the authority for live OAuth grants. The Desktop's observed
 // client cache is telemetry only: it must never resurrect a revoked grant.
 export async function listRemoteMcpClients(): Promise<RemoteMcpClientRecord[]> {
+  // Grant discovery failure must propagate. Treating it as an empty successful
+  // lookup would falsely resurrect revoked process-local observed clients.
   const [grants, observed] = await Promise.all([
     invoke<RemoteMcpGrantClient[]>("list_remote_mcp_grant_clients"),
     invoke<RemoteMcpClientRecord[]>("list_remote_mcp_clients").catch(() => []),
   ]);
-  const observations = new Map(observed.map((client) => [client.principal, client]));
-
-  return grants.map((grant): RemoteMcpClientRecord => {
-    const seen = observations.get(grant.principal);
-    return {
-      principal: grant.principal,
-      displayName: grant.displayName,
-      firstSeenAt: seen?.firstSeenAt ?? "",
-      lastSeenAt: seen?.lastSeenAt ?? "",
-      observed: Boolean(seen),
-      activeOnThisDevice: grant.activeOnThisDevice,
-      relayReadyOnThisDevice: grant.relayReadyOnThisDevice,
-      authorizedAt: grant.authorizedAt,
-      authorizationUpdatedAt: grant.updatedAt,
-    };
-  }).sort((left, right) => {
-    if (left.relayReadyOnThisDevice !== right.relayReadyOnThisDevice) {
-      return left.relayReadyOnThisDevice === true
-        ? -1
-        : right.relayReadyOnThisDevice === true
-          ? 1
-          : 0;
-    }
-    if (left.activeOnThisDevice !== right.activeOnThisDevice) {
-      return left.activeOnThisDevice === true ? -1 : right.activeOnThisDevice === true ? 1 : 0;
-    }
-    if (left.observed !== right.observed) return left.observed ? -1 : 1;
-    const leftUpdated = left.authorizationUpdatedAt ?? "";
-    const rightUpdated = right.authorizationUpdatedAt ?? "";
-    if (leftUpdated !== rightUpdated) return rightUpdated.localeCompare(leftUpdated);
-    return left.displayName.localeCompare(right.displayName);
-  });
+  return combineAuthorizedRemoteMcpClients(grants, observed);
 }
 
 export async function routeRemoteMcpClientHere(principal: string): Promise<boolean> {
