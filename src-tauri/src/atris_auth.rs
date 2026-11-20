@@ -165,6 +165,22 @@ struct AuthFailure {
     message: String,
 }
 
+impl AuthFailure {
+    fn rejects_credential(&self) -> bool {
+        self.kind == FailureKind::Unauthorized
+    }
+}
+
+fn response_failure_kind(status: StatusCode, has_error_body: bool) -> FailureKind {
+    if has_error_body && matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+        FailureKind::Unauthorized
+    } else if status.is_server_error() {
+        FailureKind::Server
+    } else {
+        FailureKind::Invalid
+    }
+}
+
 fn client_with_timeout(timeout: Duration) -> Result<Client, AuthFailure> {
     Client::builder()
         .timeout(timeout)
@@ -191,15 +207,9 @@ fn parse_response(response: Response) -> Result<DesktopSessionResponse, AuthFail
     let message = response
         .json::<ErrorResponse>()
         .ok()
-        .and_then(|value| value.error)
-        .unwrap_or_else(|| format!("AtrisHub request failed ({status})."));
-    let kind = if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
-        FailureKind::Unauthorized
-    } else if status.is_server_error() {
-        FailureKind::Server
-    } else {
-        FailureKind::Invalid
-    };
+        .and_then(|value| value.error);
+    let kind = response_failure_kind(status, message.is_some());
+    let message = message.unwrap_or_else(|| format!("AtrisHub request failed ({status})."));
     Err(AuthFailure { kind, message })
 }
 
@@ -525,9 +535,7 @@ pub(crate) fn ensure_desktop_session_credential(
             commit_session(app, state, response, remember)?;
             current_desktop_session_credential(app, state, RELAY_REFRESH_MARGIN_SECONDS)
         }
-        Err(failure) if matches!(failure.kind, FailureKind::Network | FailureKind::Server) => {
-            Err(failure.message)
-        }
+        Err(failure) if !failure.rejects_credential() => Err(failure.message),
         Err(failure) => {
             clear_local_identity(app)?;
             let mut runtime = state
@@ -589,9 +597,14 @@ pub async fn login_atrishub(
         return Err("Email/username and password are required.".into());
     }
     let auth_state = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || match send_login(&app, &identity, &password) {
-        Ok(response) => commit_session(&app, &auth_state, response, remember_device),
-        Err(failure) => Err(failure.message),
+    tauri::async_runtime::spawn_blocking(move || {
+        let _refresh_operation = AUTH_REFRESH_LOCK
+            .lock()
+            .map_err(|_| "AtrisHub refresh operation lock is unavailable.".to_string())?;
+        match send_login(&app, &identity, &password) {
+            Ok(response) => commit_session(&app, &auth_state, response, remember_device),
+            Err(failure) => Err(failure.message),
+        }
     })
     .await
     .map_err(|error| format!("AtrisHub login task failed: {error}"))?
@@ -619,7 +632,7 @@ pub async fn restore_atrishub_session(
         }
         match send_refresh(&refresh_token) {
             Ok(response) => commit_session(&app, &auth_state, response, true),
-            Err(failure) if matches!(failure.kind, FailureKind::Network | FailureKind::Server) => {
+            Err(failure) if !failure.rejects_credential() => {
                 let mut snapshot = cached_snapshot(&app)?.unwrap_or_else(AuthSnapshot::signed_out);
                 if snapshot.user.is_some() {
                     snapshot.state = "offline_cached".into();
@@ -684,6 +697,30 @@ pub async fn logout_atrishub(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_desktop_auth_rejection_invalidates_a_remembered_credential() {
+        for status in [StatusCode::UNAUTHORIZED, StatusCode::FORBIDDEN] {
+            assert_eq!(
+                response_failure_kind(status, true),
+                FailureKind::Unauthorized
+            );
+            assert_ne!(
+                response_failure_kind(status, false),
+                FailureKind::Unauthorized
+            );
+        }
+        for status in [
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::BAD_GATEWAY,
+            StatusCode::NOT_FOUND,
+        ] {
+            assert_ne!(
+                response_failure_kind(status, true),
+                FailureKind::Unauthorized
+            );
+        }
+    }
 
     #[test]
     fn auth_endpoint_is_https_and_dedicated_to_desktop_sessions() {
